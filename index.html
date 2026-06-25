@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Set-Sot — Kartu Shedding Game</title>
+  <meta name="description" content="Permainan kartu Set-Sot multiplayer dengan mekanik bom dan joker.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ==================== MAIN MENU ==================== -->
+  <div id="menu-screen" class="screen active">
+    <div class="menu-bg"></div>
+    <div class="menu-content">
+      <div class="menu-logo-wrap">
+        <div class="menu-logo-cards">
+          <span class="ml-s ml-s1">♠</span>
+          <span class="ml-s ml-s2">♥</span>
+          <span class="ml-s ml-s3">♦</span>
+          <span class="ml-s ml-s4">♣</span>
+        </div>
+        <h1 class="menu-title">Set-Sot</h1>
+        <p class="menu-tagline">Shedding Card Game</p>
+      </div>
+
+      <!-- Profile badge -->
+      <button id="menu-profile-btn" class="menu-profile-badge" title="Edit Profil">
+        <span id="menu-profile-avatar" class="profile-avatar-mini">♠</span>
+        <span id="menu-profile-name" class="profile-name-mini">Pemain</span>
+        <span class="profile-edit-icon">✎</span>
+      </button>
+
+      <div class="menu-buttons">
+        <button id="btn-solo" class="menu-btn menu-btn-solo">
+          <span class="menu-btn-icon">🤖</span>
+          <div class="menu-btn-text">
+            <span class="menu-btn-label">Solo Play</span>
+            <span class="menu-btn-sub">Bermain vs Bot</span>
+          </div>
+        </button>
+        <button id="btn-create-room" class="menu-btn menu-btn-create">
+          <span class="menu-btn-icon">🏠</span>
+          <div class="menu-btn-text">
+            <span class="menu-btn-label">Buat Room</span>
+            <span class="menu-btn-sub">Buat room & undang teman</span>
+          </div>
+        </button>
+        <button id="btn-join-room" class="menu-btn menu-btn-join">
+          <span class="menu-btn-icon">🚪</span>
+          <div class="menu-btn-text">
+            <span class="menu-btn-label">Gabung Room</span>
+            <span class="menu-btn-sub">Masuk dengan kode room</span>
+          </div>
+        </button>
+      </div>
+
+      <p class="menu-footer">v2.0 — Multiplayer Edition</p>
+    </div>
+  </div>
+
+  <!-- ==================== PROFILE SCREEN ==================== -->
+  <div id="profile-screen" class="screen">
+    <div class="profile-card">
+      <button id="profile-back" class="screen-back-btn">← Kembali</button>
+      <h2 class="profile-title">Profil Kamu</h2>
+
+      <div class="profile-preview">
+        <div id="profile-preview-avatar" class="profile-avatar-big">♠</div>
+        <div id="profile-preview-name" class="profile-preview-name">Pemain</div>
+      </div>
+
+      <label class="profile-field-label">Nama</label>
+      <input id="profile-name-input" class="profile-input" type="text" maxlength="12" placeholder="Masukkan nama...">
+
+      <label class="profile-field-label">Pilih Simbol</label>
+      <div id="profile-symbols" class="profile-symbol-grid">
+        <button class="psym-btn active" data-symbol="♠">♠</button>
+        <button class="psym-btn" data-symbol="♥">♥</button>
+        <button class="psym-btn" data-symbol="♦">♦</button>
+        <button class="psym-btn" data-symbol="♣">♣</button>
+      </div>
+
+      <label class="profile-field-label">Pilih Warna</label>
+      <div id="profile-colors" class="profile-color-grid">
+        <button class="pcolor-btn active" data-color="#E5342E" style="--pc:#E5342E"></button>
+        <button class="pcolor-btn" data-color="#0A84FF" style="--pc:#0A84FF"></button>
+        <button class="pcolor-btn" data-color="#30D158" style="--pc:#30D158"></button>
+        <button class="pcolor-btn" data-color="#BF5AF2" style="--pc:#BF5AF2"></button>
+        <button class="pcolor-btn" data-color="#FF9F0A" style="--pc:#FF9F0A"></button>
+        <button class="pcolor-btn" data-color="#FF375F" style="--pc:#FF375F"></button>
+        <button class="pcolor-btn" data-color="#64D2FF" style="--pc:#64D2FF"></button>
+        <button class="pcolor-btn" data-color="#FFD60A" style="--pc:#FFD60A"></button>
+      </div>
+
+      <button id="profile-save" class="btn-primary" style="margin-top:20px;">Simpan Profil</button>
+    </div>
+  </div>
+
+  <!-- ==================== SOLO SETUP SCREEN ==================== -->
+  <div id="setup-screen" class="screen">
+    <div class="setup-card">
+      <button id="solo-back" class="screen-back-btn">← Kembali</button>
+      <div class="setup-logo">♠♥♦♣</div>
+      <h1>Solo Play</h1>
+      <p class="setup-subtitle">Bermain vs Bot AI</p>
+
+      <div class="setting-row">
+        <span class="setting-label">Jumlah Pemain</span>
+        <div class="stepper" id="stepper-players">
+          <button class="stepper-btn" data-dir="-1" aria-label="Kurangi pemain">−</button>
+          <span class="stepper-val" id="val-players">4</span>
+          <button class="stepper-btn" data-dir="1" aria-label="Tambah pemain">+</button>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <span class="setting-label">Jumlah Dek</span>
+        <div class="stepper" id="stepper-decks">
+          <button class="stepper-btn" data-dir="-1" aria-label="Kurangi dek">−</button>
+          <span class="stepper-val" id="val-decks">1</span>
+          <button class="stepper-btn" data-dir="1" aria-label="Tambah dek">+</button>
+        </div>
+      </div>
+
+      <div class="setting-info" id="setting-info">56 kartu · 14 kartu/pemain</div>
+
+      <div class="setting-row" style="border-bottom:none; padding-bottom:0;">
+        <span class="setting-label">Kesulitan Bot</span>
+      </div>
+      <div class="difficulty-selector" id="difficulty-selector">
+        <button class="diff-btn" data-diff="easy">🟢 Mudah</button>
+        <button class="diff-btn active" data-diff="normal">🟡 Normal</button>
+        <button class="diff-btn" data-diff="hard">🔴 Sulit</button>
+      </div>
+
+      <button id="btn-start" class="btn-primary" style="margin-top:20px;">Mulai Permainan</button>
+    </div>
+  </div>
+
+  <!-- ==================== CREATE ROOM SCREEN ==================== -->
+  <div id="create-room-screen" class="screen">
+    <div class="lobby-card">
+      <button id="create-back" class="screen-back-btn">← Kembali</button>
+      <h2 class="lobby-title">Buat Room</h2>
+
+      <div class="setting-row">
+        <span class="setting-label">Jumlah Dek</span>
+        <div class="stepper" id="stepper-mp-decks">
+          <button class="stepper-btn" data-dir="-1">−</button>
+          <span class="stepper-val" id="val-mp-decks">1</span>
+          <button class="stepper-btn" data-dir="1">+</button>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <span class="setting-label">Max Pemain</span>
+        <div class="stepper" id="stepper-mp-max">
+          <button class="stepper-btn" data-dir="-1">−</button>
+          <span class="stepper-val" id="val-mp-max">4</span>
+          <button class="stepper-btn" data-dir="1">+</button>
+        </div>
+      </div>
+
+      <div class="setting-info" id="mp-setting-info">56 kartu · 14 kartu/pemain</div>
+
+      <button id="btn-create-go" class="btn-primary" style="margin-top:16px;">
+        <span class="btn-spinner hidden" id="create-spinner"></span>
+        Buat Room Sekarang
+      </button>
+    </div>
+  </div>
+
+  <!-- ==================== JOIN ROOM SCREEN ==================== -->
+  <div id="join-room-screen" class="screen">
+    <div class="lobby-card">
+      <button id="join-back" class="screen-back-btn">← Kembali</button>
+      <h2 class="lobby-title">Gabung Room</h2>
+      <p class="lobby-subtitle">Masukkan kode room dari host</p>
+
+      <div class="room-code-input-wrap">
+        <input id="join-code-input" class="room-code-input" type="text" maxlength="6" placeholder="KODE" autocomplete="off" spellcheck="false">
+      </div>
+
+      <button id="btn-join-go" class="btn-primary" style="margin-top:16px;">
+        <span class="btn-spinner hidden" id="join-spinner"></span>
+        Gabung
+      </button>
+      <p id="join-error" class="join-error-msg"></p>
+    </div>
+  </div>
+
+  <!-- ==================== LOBBY SCREEN ==================== -->
+  <div id="lobby-screen" class="screen">
+    <div class="lobby-panel">
+      <div class="lobby-header">
+        <button id="lobby-leave" class="screen-back-btn">← Keluar</button>
+        <h2 class="lobby-title" style="margin:0;">Lobby</h2>
+        <div class="lobby-room-code-wrap">
+          <span class="lobby-room-label">Kode Room</span>
+          <button id="lobby-code-btn" class="lobby-code" title="Copy kode">
+            <span id="lobby-code-text">------</span>
+            <span class="copy-icon">📋</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Settings (host only) -->
+      <div id="lobby-settings" class="lobby-settings">
+        <div class="setting-row">
+          <span class="setting-label">Dek</span>
+          <div class="stepper" id="stepper-lobby-decks">
+            <button class="stepper-btn" data-dir="-1">−</button>
+            <span class="stepper-val" id="val-lobby-decks">1</span>
+            <button class="stepper-btn" data-dir="1">+</button>
+          </div>
+        </div>
+        <div class="setting-info" id="lobby-setting-info">56 kartu</div>
+      </div>
+
+      <!-- Guest settings view (read-only) -->
+      <div id="lobby-settings-guest" class="lobby-settings hidden">
+        <div class="lobby-guest-info">
+          <span>Dek: <strong id="lobby-guest-decks">1</strong></span>
+          <span>Max: <strong id="lobby-guest-max">4</strong></span>
+        </div>
+      </div>
+
+      <!-- Player list -->
+      <div class="lobby-players-header">
+        <span>Pemain</span>
+        <span id="lobby-player-count">1 / 4</span>
+      </div>
+      <div id="lobby-player-list" class="lobby-player-list">
+        <!-- Filled by JS -->
+      </div>
+
+      <!-- Chat -->
+      <div class="lobby-chat">
+        <div id="lobby-chat-log" class="lobby-chat-log"></div>
+        <div class="lobby-chat-input-wrap">
+          <input id="lobby-chat-input" class="lobby-chat-input" type="text" maxlength="100" placeholder="Ketik pesan...">
+          <button id="lobby-chat-send" class="lobby-chat-send-btn">➤</button>
+        </div>
+      </div>
+
+      <!-- Start button (host only) -->
+      <button id="btn-lobby-start" class="btn-primary lobby-start-btn">Mulai Game</button>
+      <p id="lobby-wait-msg" class="lobby-wait-msg hidden">Menunggu host memulai permainan...</p>
+    </div>
+  </div>
+
+  <!-- ==================== GAME SCREEN ==================== -->
+  <div id="game-screen" class="screen">
+    <!-- Top bar -->
+    <header class="game-header">
+      <button id="btn-menu" class="header-btn" title="Kembali">✕</button>
+      <div id="game-status" class="game-status">Giliran: Kamu</div>
+      <div id="round-badge" class="round-badge">Putaran 1</div>
+    </header>
+
+    <!-- Turn timer bar -->
+    <div id="turn-timer-bar" class="turn-timer-bar hidden">
+      <div id="turn-timer-fill" class="turn-timer-fill"></div>
+    </div>
+
+    <!-- Opponents row -->
+    <section class="opponents" id="opponents"></section>
+
+    <!-- Play area (table) -->
+    <section class="table-area">
+      <div class="table-surface">
+        <div class="table-felt-pattern"></div>
+        <div class="table-label" id="table-label">Meja kosong — mainkan kartu</div>
+        <div class="table-cards" id="table-cards"></div>
+        <div class="table-pattern" id="table-pattern"></div>
+      </div>
+    </section>
+
+    <!-- Game log -->
+    <section class="game-log" id="game-log"></section>
+
+    <!-- In-game chat toggle -->
+    <button id="ingame-chat-toggle" class="ingame-chat-toggle hidden" title="Chat">
+      💬
+      <span id="ingame-chat-badge" class="chat-badge hidden">0</span>
+    </button>
+    <div id="ingame-chat-panel" class="ingame-chat-panel hidden">
+      <div class="ingame-chat-header">
+        <span>Chat</span>
+        <button id="ingame-chat-close" class="ingame-chat-close">✕</button>
+      </div>
+      <div id="ingame-chat-log" class="ingame-chat-log"></div>
+      <div class="lobby-chat-input-wrap">
+        <input id="ingame-chat-input" class="lobby-chat-input" type="text" maxlength="100" placeholder="Ketik pesan...">
+        <button id="ingame-chat-send" class="lobby-chat-send-btn">➤</button>
+      </div>
+    </div>
+
+    <!-- Player hand -->
+    <section class="player-section">
+      <div class="hand-info">
+        <span id="hand-count">13 kartu</span>
+        <span id="turn-timer-text" class="turn-timer-text hidden">30s</span>
+      </div>
+      <div class="player-hand" id="player-hand"></div>
+      <div class="action-bar">
+        <button id="btn-pass" class="btn-action btn-pass" disabled>Pass</button>
+        <button id="btn-play" class="btn-action btn-play" disabled>Mainkan</button>
+        <button id="btn-skip" class="btn-action btn-play hidden" style="background:#E5342E; display:none;">Lewati & Mulai Baru</button>
+      </div>
+    </section>
+  </div>
+
+  <!-- ==================== YOUR TURN BANNER ==================== -->
+  <div id="your-turn-anim" class="your-turn-anim">
+    <div class="yt-line"></div>
+    <div class="yt-content">
+      <span class="yt-icon">⚡</span>
+      <span class="yt-text">GILIRANMU!</span>
+    </div>
+    <div class="yt-line"></div>
+  </div>
+
+  <!-- ==================== DEAL ANIMATION OVERLAY ==================== -->
+  <div id="deal-overlay" class="deal-overlay hidden">
+    <div class="deal-scene">
+      <div class="deal-deck" id="deal-deck"></div>
+      <div class="deal-text" id="deal-text">Mengocok kartu…</div>
+    </div>
+  </div>
+
+  <!-- ==================== GAME OVER OVERLAY ==================== -->
+  <div id="gameover-overlay" class="overlay hidden">
+    <div class="overlay-card">
+      <div class="overlay-icon" id="gameover-icon">🏆</div>
+      <h2 id="gameover-title">Game Selesai</h2>
+      <div id="gameover-desc" style="margin-bottom: 24px; text-align: left; background: #F2F2F7; padding: 12px; border-radius: 12px; font-size: 15px; color: #1D1D1F;"></div>
+      <button id="btn-restart" class="btn-primary">Bermain Lagi</button>
+    </div>
+  </div>
+
+  <!-- ==================== HUMAN WIN OVERLAY (MID-GAME) ==================== -->
+  <div id="human-win-overlay" class="overlay hidden" style="z-index: 120;">
+    <div class="overlay-card">
+      <div class="overlay-icon">🎖️</div>
+      <h2 id="human-win-title">Kamu Juara!</h2>
+      <p id="human-win-desc" style="font-size: 15px; color: #636366; margin-bottom: 24px;">Selamat, kartumu telah habis! Para Bot masih bertarung memperebutkan sisa posisi.</p>
+      <div style="display: flex; gap: 10px; margin-top: 10px;">
+        <button id="btn-watch" class="btn-primary" style="background: #E5E5EA; color: #1D1D1F; box-shadow: none;">Tonton Bot</button>
+        <button id="btn-next-game" class="btn-primary">Game Baru</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== DISCONNECT OVERLAY ==================== -->
+  <div id="disconnect-overlay" class="overlay hidden" style="z-index: 130;">
+    <div class="overlay-card">
+      <div class="overlay-icon">📡</div>
+      <h2 id="disconnect-title">Terputus</h2>
+      <p id="disconnect-desc" style="font-size: 15px; color: #636366; margin-bottom: 24px;">Koneksi terputus. Mencoba menghubungkan kembali...</p>
+      <div class="reconnect-spinner"></div>
+      <button id="btn-back-menu" class="btn-primary" style="margin-top:16px; background: #E5E5EA; color: #1D1D1F; box-shadow: none;">Kembali ke Menu</button>
+    </div>
+  </div>
+
+  <!-- Toast container -->
+  <div id="toast-container"></div>
+
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script src="game.js"></script>
+  <script src="multiplayer.js"></script>
+</body>
+</html>
