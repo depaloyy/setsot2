@@ -164,10 +164,12 @@ function updateProfilePreview(name, symbol, color) {
 function updateMenuProfileBadge(profile) {
   const avatar = $mp('menu-profile-avatar');
   avatar.textContent = profile.symbol;
-  avatar.style.background = hexToRGBA(profile.color, 0.2);
+  avatar.style.background = hexToRGBA(profile.color, 0.18);
   avatar.style.color = profile.color;
+  avatar.style.border = `2px solid ${hexToRGBA(profile.color, 0.3)}`;
   $mp('menu-profile-name').textContent = profile.name;
 }
+
 
 /* ============================================================
  *  5. ROOM CREATION (HOST)
@@ -1080,7 +1082,7 @@ function hostScheduleTurn() {
     // Broadcast turn info to all others
     broadcastGameState();
 
-    // Start timer for this player
+    // Start silent timer for this player (no UI bar shown)
     startTurnTimer(() => {
       // Player timeout — auto pass or play
       if (G.currentPattern) {
@@ -1091,7 +1093,7 @@ function hostScheduleTurn() {
           executePlay(G.currentIdx, [hand[0]]);
         }
       }
-    });
+    }, false);  // isMyTurn = false → no visual bar
   }
 }
 
@@ -1260,38 +1262,50 @@ function handleMultiplayerAction(data) {
 /* ============================================================
  *  17. TURN TIMER
  * ============================================================ */
-function startTurnTimer(onTimeout) {
+function startTurnTimer(onTimeout, isMyTurn = true) {
   clearTurnTimer();
 
   if (!MP.isMultiplayer) return;
 
   MP.turnTimerValue = TURN_TIME;
-  const timerBar = $mp('turn-timer-bar');
-  const timerFill = $mp('turn-timer-fill');
-  const timerText = $mp('turn-timer-text');
 
-  if (timerBar) timerBar.classList.remove('hidden');
-  if (timerText) {
-    timerText.classList.remove('hidden');
-    timerText.textContent = `${TURN_TIME}s`;
-    timerText.classList.remove('urgent');
-  }
-  if (timerFill) timerFill.style.width = '100%';
+  // Only show the visible countdown bar for MY turn
+  if (isMyTurn) {
+    const timerBar = $mp('turn-timer-bar');
+    const timerFill = $mp('turn-timer-fill');
+    const timerText = $mp('turn-timer-text');
 
-  MP.turnTimer = setInterval(() => {
-    MP.turnTimerValue--;
-    const pct = (MP.turnTimerValue / TURN_TIME) * 100;
-    if (timerFill) timerFill.style.width = `${pct}%`;
+    if (timerBar) timerBar.classList.remove('hidden');
     if (timerText) {
-      timerText.textContent = `${MP.turnTimerValue}s`;
-      if (MP.turnTimerValue <= 5) timerText.classList.add('urgent');
+      timerText.classList.remove('hidden');
+      timerText.textContent = `${TURN_TIME}s`;
+      timerText.classList.remove('urgent');
     }
+    if (timerFill) timerFill.style.width = '100%';
 
-    if (MP.turnTimerValue <= 0) {
-      clearTurnTimer();
-      if (onTimeout) onTimeout();
-    }
-  }, 1000);
+    MP.turnTimer = setInterval(() => {
+      MP.turnTimerValue--;
+      const pct = (MP.turnTimerValue / TURN_TIME) * 100;
+      if (timerFill) timerFill.style.width = `${pct}%`;
+      if (timerText) {
+        timerText.textContent = `${MP.turnTimerValue}s`;
+        if (MP.turnTimerValue <= 5) timerText.classList.add('urgent');
+      }
+      if (MP.turnTimerValue <= 0) {
+        clearTurnTimer();
+        if (onTimeout) onTimeout();
+      }
+    }, 1000);
+  } else {
+    // Other player's turn — just run a silent background countdown, no UI
+    MP.turnTimer = setInterval(() => {
+      MP.turnTimerValue--;
+      if (MP.turnTimerValue <= 0) {
+        clearTurnTimer();
+        if (onTimeout) onTimeout();
+      }
+    }, 1000);
+  }
 }
 
 function clearTurnTimer() {

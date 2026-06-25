@@ -26,11 +26,17 @@
         <p class="menu-tagline">Shedding Card Game</p>
       </div>
 
-      <!-- Profile badge -->
-      <button id="menu-profile-btn" class="menu-profile-badge" title="Edit Profil">
-        <span id="menu-profile-avatar" class="profile-avatar-mini">♠</span>
-        <span id="menu-profile-name" class="profile-name-mini">Pemain</span>
-        <span class="profile-edit-icon">✎</span>
+      <!-- Profile card -->
+      <button id="menu-profile-btn" class="menu-profile-card">
+        <div class="menu-profile-avatar-wrap">
+          <span id="menu-profile-avatar" class="profile-avatar-mini">♠</span>
+          <span class="profile-online-dot"></span>
+        </div>
+        <div class="menu-profile-info">
+          <span id="menu-profile-name" class="profile-name-mini">Pemain</span>
+          <span class="profile-sub-mini">Ketuk untuk edit profil</span>
+        </div>
+        <span class="profile-edit-chevron">›</span>
       </button>
 
       <div class="menu-buttons">
@@ -64,7 +70,7 @@
   <!-- ==================== PROFILE SCREEN ==================== -->
   <div id="profile-screen" class="screen">
     <div class="profile-card">
-      <button id="profile-back" class="screen-back-btn">← Kembali</button>
+      <button id="profile-back" class="screen-back-btn">Kembali</button>
       <h2 class="profile-title">Profil Kamu</h2>
 
       <div class="profile-preview">
@@ -102,7 +108,7 @@
   <!-- ==================== SOLO SETUP SCREEN ==================== -->
   <div id="setup-screen" class="screen">
     <div class="setup-card">
-      <button id="solo-back" class="screen-back-btn">← Kembali</button>
+      <button id="solo-back" class="screen-back-btn">Kembali</button>
       <div class="setup-logo">♠♥♦♣</div>
       <h1>Solo Play</h1>
       <p class="setup-subtitle">Bermain vs Bot AI</p>
@@ -143,7 +149,7 @@
   <!-- ==================== CREATE ROOM SCREEN ==================== -->
   <div id="create-room-screen" class="screen">
     <div class="lobby-card">
-      <button id="create-back" class="screen-back-btn">← Kembali</button>
+      <button id="create-back" class="screen-back-btn">Kembali</button>
       <h2 class="lobby-title">Buat Room</h2>
 
       <div class="setting-row">
@@ -176,7 +182,7 @@
   <!-- ==================== JOIN ROOM SCREEN ==================== -->
   <div id="join-room-screen" class="screen">
     <div class="lobby-card">
-      <button id="join-back" class="screen-back-btn">← Kembali</button>
+      <button id="join-back" class="screen-back-btn">Kembali</button>
       <h2 class="lobby-title">Gabung Room</h2>
       <p class="lobby-subtitle">Masukkan kode room dari host</p>
 
@@ -196,7 +202,7 @@
   <div id="lobby-screen" class="screen">
     <div class="lobby-panel">
       <div class="lobby-header">
-        <button id="lobby-leave" class="screen-back-btn">← Keluar</button>
+        <button id="lobby-leave" class="screen-back-btn">Keluar</button>
         <h2 class="lobby-title" style="margin:0;">Lobby</h2>
         <div class="lobby-room-code-wrap">
           <span class="lobby-room-label">Kode Room</span>

@@ -1203,8 +1203,12 @@ function updateStatus() {
     const p = G.players[G.currentIdx];
     if (G.currentIdx === myIdx && !G.busy) {
       statusEl.textContent = `⚡ Giliranmu!`;
+    } else if (!p.isHuman && !isMP) {
+      // Solo mode: bot thinking
+      statusEl.innerHTML = `${p.name} <span class="thinking">Memilih kartu</span>`;
     } else {
-      statusEl.textContent = `Giliran: ${p.name}`;
+      // Multiplayer: other player thinking
+      statusEl.innerHTML = `🤔 ${p.name} <span class="thinking">sedang memilih</span>`;
     }
   }
   badgeEl.textContent = `Putaran ${G.roundNum}`;
