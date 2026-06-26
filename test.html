@@ -1,0 +1,5 @@
+<!DOCTYPE html><html><head><script>
+window.onerror = function(msg, url, line, col, error) {
+  require("fs").writeFileSync("error.log", msg + " at " + line + ":" + col);
+};
+</script></head><body></body></html>
