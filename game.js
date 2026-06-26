@@ -365,6 +365,10 @@ async function performThreeDump() {
   playSound('play');
   addLog(`Pembukaan kartu 3 — ${G.players[startIdx].name} menang! (${bestCount} kartu 3)`);
   
+  if (typeof window.mpThreeDumpHook === 'function') {
+    window.mpThreeDumpHook(allThrees, startIdx, summaries.join(' | '));
+  }
+  
   // Wait so player can see the showdown
   await _delay(2500);
   
@@ -1653,9 +1657,7 @@ function setupListeners() {
     $('table-label').textContent = 'Meja kosong — mainkan kartu';
     $('hand-count').textContent = '0 kartu';
     $('game-status').textContent = 'Mengocok kartu...';
-    // Hide timer for solo
-    const timerBar = $('turn-timer-bar');
-    if (timerBar) timerBar.classList.add('hidden');
+
     
     playSound('deal');
     G.isFirstGame = true;
@@ -1672,7 +1674,7 @@ function setupListeners() {
     if (aiTimeoutId) { clearTimeout(aiTimeoutId); aiTimeoutId = null; }
     if (typeof clearTurnTimer === 'function') clearTurnTimer();
     if (typeof MP !== 'undefined' && MP.isMultiplayer) {
-      if (typeof destroyPeer === 'function') destroyPeer();
+      if (typeof destroyChannel === 'function') destroyChannel();
       MP.isMultiplayer = false;
     }
     $('game-screen').classList.remove('active');
@@ -1715,13 +1717,13 @@ function setupListeners() {
   }
 
   $('btn-restart').addEventListener('click', () => {
-    // In multiplayer, go back to menu
     if (typeof MP !== 'undefined' && MP.isMultiplayer) {
-      $('gameover-overlay').classList.add('hidden');
-      $('human-win-overlay').classList.add('hidden');
-      if (typeof destroyPeer === 'function') destroyPeer();
-      MP.isMultiplayer = false;
-      if (typeof showScreen === 'function') showScreen('menu-screen');
+      if (MP.isHost && typeof hostStartGame === 'function') {
+        hostStartGame(true);
+      } else {
+        $('gameover-overlay').classList.add('hidden');
+        if (typeof showToast === 'function') showToast('Menunggu Host untuk mulai game baru...');
+      }
       return;
     }
     restartGame();
@@ -1735,9 +1737,11 @@ function setupListeners() {
   $('btn-next-game').addEventListener('click', () => {
     $('human-win-overlay').classList.add('hidden');
     if (typeof MP !== 'undefined' && MP.isMultiplayer) {
-      if (typeof destroyPeer === 'function') destroyPeer();
-      MP.isMultiplayer = false;
-      if (typeof showScreen === 'function') showScreen('menu-screen');
+      if (MP.isHost && typeof hostStartGame === 'function') {
+        hostStartGame(true);
+      } else {
+        if (typeof showToast === 'function') showToast('Menunggu Host untuk mulai game baru...');
+      }
       return;
     }
     restartGame();

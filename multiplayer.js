@@ -45,12 +45,11 @@ const ProfileMgr = {
 const MP = {
   isMultiplayer: false,
   isHost: false,
-  peer: null,
-  connections: [],     // host: array of { conn, profile, peerId }
-  hostConn: null,      // guest: connection to host
+  channel: null,       // Supabase Realtime Channel
+  connections: [],     // Not strictly needed in same way, but kept for logic compat
   roomCode: '',
-  myPeerId: '',
-  players: [],         // { peerId, profile: {name, symbol, color}, isHost, connected }
+  myPeerId: '',        // We will generate a random ID for ourselves
+  players: [],         // { peerId, profile, isHost, connected }
   settings: { decks: 1, maxPlayers: 4 },
   gameStarted: false,
   turnTimer: null,
@@ -58,6 +57,12 @@ const MP = {
   chatMessages: [],
   unreadChat: 0,
 };
+
+const SUPABASE_URL = 'https://uciohbcjtranikvcufhh.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_mm8NP_zIDLfk6bmlwXmIxQ_oIDf6C_U';
+const supabaseClient = typeof window.supabase !== 'undefined' 
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) 
+  : null;
 
 const ROOM_PREFIX = 'setsot-';
 const TURN_TIME = 30; // seconds
@@ -200,7 +205,7 @@ function initCreateRoomUI() {
 
   $mp('btn-create-go').addEventListener('click', () => createRoom());
   $mp('create-back').addEventListener('click', () => {
-    destroyPeer();
+    destroyChannel();
     showScreen('menu-screen');
   });
 }
@@ -220,7 +225,7 @@ async function createRoom() {
   const peerId = ROOM_PREFIX + MP.roomCode;
 
   try {
-    await initPeer(peerId);
+    await initChannel(MP.roomCode, true);
     MP.isHost = true;
     MP.isMultiplayer = true;
     MP.gameStarted = false;
@@ -232,9 +237,6 @@ async function createRoom() {
       isHost: true,
       connected: true
     }];
-
-    // Listen for incoming connections
-    MP.peer.on('connection', conn => handleHostIncoming(conn));
 
     spinner.classList.add('hidden');
     $mp('btn-create-go').disabled = false;
@@ -263,7 +265,7 @@ function initJoinRoomUI() {
 
   $mp('btn-join-go').addEventListener('click', () => joinRoom());
   $mp('join-back').addEventListener('click', () => {
-    destroyPeer();
+    destroyChannel();
     showScreen('menu-screen');
   });
 
@@ -285,56 +287,27 @@ async function joinRoom() {
   $mp('btn-join-go').disabled = true;
   $mp('join-error').textContent = '';
 
-  const hostPeerId = ROOM_PREFIX + code;
-
   try {
-    await initPeer(null); // random ID for guest
+    await initChannel(code, false);
     MP.isHost = false;
     MP.isMultiplayer = true;
     MP.roomCode = code;
     MP.gameStarted = false;
-
-    // Connect to host
-    const conn = MP.peer.connect(hostPeerId, { reliable: true });
-
-    conn.on('open', () => {
-      MP.hostConn = conn;
-      // Send join request
-      const profile = ProfileMgr.get();
-      conn.send({
-        type: 'join',
-        profile,
-        peerId: MP.myPeerId
-      });
-    });
-
-    conn.on('data', data => handleGuestData(data));
-
-    conn.on('close', () => {
-      if (!MP.gameStarted) {
-        showToast('❌ Koneksi terputus');
-        showScreen('menu-screen');
-      } else {
-        showDisconnectOverlay();
+    
+    // Send join request via broadcast
+    const profile = ProfileMgr.get();
+    MP.channel.send({
+      type: 'broadcast',
+      event: 'guest_msg',
+      payload: {
+        senderId: MP.myPeerId,
+        data: {
+          type: 'join',
+          profile: profile
+        }
       }
     });
 
-    conn.on('error', err => {
-      spinner.classList.add('hidden');
-      $mp('btn-join-go').disabled = false;
-      $mp('join-error').textContent = 'Room tidak ditemukan';
-      console.error('Join error:', err);
-    });
-
-    // Timeout
-    setTimeout(() => {
-      if (!MP.hostConn) {
-        spinner.classList.add('hidden');
-        $mp('btn-join-go').disabled = false;
-        $mp('join-error').textContent = 'Room tidak ditemukan atau sudah penuh';
-        destroyPeer();
-      }
-    }, 8000);
   } catch (err) {
     spinner.classList.add('hidden');
     $mp('btn-join-go').disabled = false;
@@ -344,90 +317,91 @@ async function joinRoom() {
 }
 
 /* ============================================================
- *  7. PEERJS MANAGEMENT
+ *  7. SUPABASE CHANNEL MANAGEMENT
  * ============================================================ */
-function initPeer(id) {
-  return new Promise((resolve, reject) => {
-    destroyPeer();
-    try {
-      MP.peer = id ? new Peer(id) : new Peer();
-    } catch (e) {
-      reject(e);
-      return;
-    }
+function generateId() {
+  return Math.random().toString(36).substring(2, 10);
+}
 
-    MP.peer.on('open', peerId => {
-      MP.myPeerId = peerId;
-      resolve(peerId);
+function initChannel(roomCode, isHost = false) {
+  return new Promise((resolve, reject) => {
+    destroyChannel();
+    MP.myPeerId = generateId();
+    
+    MP.channel = supabaseClient.channel('room-' + roomCode, {
+      config: { presence: { key: MP.myPeerId } }
     });
 
-    MP.peer.on('error', err => {
-      if (err.type === 'unavailable-id') {
-        reject(new Error('Room code sudah digunakan'));
-      } else {
-        reject(err);
+    if (isHost) {
+      MP.channel.on('broadcast', { event: 'guest_msg' }, ({ payload }) => {
+        handleHostData(payload.senderId, payload.data);
+      });
+      MP.channel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
+        for (const presence of leftPresences) {
+           handlePlayerDisconnect(presence.peerId);
+        }
+      });
+    } else {
+      MP.channel.on('broadcast', { event: 'host_msg' }, ({ payload }) => {
+        if (payload.target && payload.target !== MP.myPeerId) return;
+        if (payload.exclude && payload.exclude === MP.myPeerId) return;
+        handleGuestData(payload.data);
+      });
+    }
+
+    MP.channel.subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') {
+        if (!isHost) {
+           await MP.channel.track({ peerId: MP.myPeerId });
+        }
+        resolve(MP.myPeerId);
+      }
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        reject(new Error('Koneksi gagal atau timeout'));
       }
     });
 
-    // Timeout for peer opening
-    setTimeout(() => reject(new Error('Timeout')), 10000);
+    setTimeout(() => {
+       if (MP.channel && MP.channel.state !== 'joined') {
+         reject(new Error('Timeout'));
+       }
+    }, 10000);
   });
 }
 
-function destroyPeer() {
-  if (MP.peer) {
-    try { MP.peer.destroy(); } catch (e) { /* ignore */ }
-    MP.peer = null;
+function destroyChannel() {
+  if (MP.channel) {
+    try { supabaseClient.removeChannel(MP.channel); } catch(e){}
+    MP.channel = null;
   }
   MP.connections = [];
-  MP.hostConn = null;
   MP.players = [];
   MP.gameStarted = false;
   clearTurnTimer();
 }
 
-/* ============================================================
- *  8. HOST — CONNECTION HANDLING
- * ============================================================ */
-function handleHostIncoming(conn) {
-  conn.on('open', () => {
-    // Wait for join message
-    conn.on('data', data => handleHostData(conn, data));
-
-    conn.on('close', () => {
-      handlePlayerDisconnect(conn.peer);
-    });
-  });
-}
-
-function handleHostData(conn, data) {
+function handleHostData(senderId, data) {
   switch (data.type) {
     case 'join': {
-      // Check if room is full
       const activePlayers = MP.players.filter(p => p.connected);
       if (activePlayers.length >= MP.settings.maxPlayers) {
-        conn.send({ type: 'error', message: 'Room penuh' });
-        conn.close();
+        sendToPlayer(senderId, { type: 'error', message: 'Room penuh' });
         return;
       }
       if (MP.gameStarted) {
-        conn.send({ type: 'error', message: 'Game sudah dimulai' });
-        conn.close();
+        sendToPlayer(senderId, { type: 'error', message: 'Game sudah dimulai' });
         return;
       }
 
-      // Add player
       const playerInfo = {
-        peerId: data.peerId,
+        peerId: senderId,
         profile: data.profile,
         isHost: false,
         connected: true
       };
       MP.players.push(playerInfo);
-      MP.connections.push({ conn, peerId: data.peerId, profile: data.profile });
 
-      // Send lobby state to new player
-      conn.send({
+      sendToPlayer(senderId, {
         type: 'lobby_state',
         players: MP.players.map(p => ({
           peerId: p.peerId,
@@ -439,7 +413,6 @@ function handleHostData(conn, data) {
         roomCode: MP.roomCode
       });
 
-      // Broadcast player joined to all
       broadcastFromHost({
         type: 'player_joined',
         player: playerInfo,
@@ -458,7 +431,7 @@ function handleHostData(conn, data) {
         senderName: data.senderName,
         senderProfile: data.senderProfile,
         message: data.message
-      }, conn.peer);
+      }, senderId);
       break;
     }
 
@@ -470,17 +443,22 @@ function handleHostData(conn, data) {
 }
 
 function broadcastFromHost(data, excludePeerId) {
-  for (const c of MP.connections) {
-    if (c.peerId !== excludePeerId && c.conn.open) {
-      try { c.conn.send(data); } catch (e) { /* ignore */ }
-    }
+  if (MP.channel) {
+    MP.channel.send({
+      type: 'broadcast',
+      event: 'host_msg',
+      payload: { exclude: excludePeerId, data }
+    });
   }
 }
 
 function sendToPlayer(peerId, data) {
-  const c = MP.connections.find(x => x.peerId === peerId);
-  if (c && c.conn.open) {
-    try { c.conn.send(data); } catch (e) { /* ignore */ }
+  if (MP.channel) {
+    MP.channel.send({
+      type: 'broadcast',
+      event: 'host_msg',
+      payload: { target: peerId, data }
+    });
   }
 }
 
@@ -489,15 +467,12 @@ function handlePlayerDisconnect(peerId) {
   if (idx === -1) return;
 
   if (!MP.gameStarted) {
-    // Remove from lobby
     MP.players.splice(idx, 1);
-    MP.connections = MP.connections.filter(c => c.peerId !== peerId);
     const name = MP.players[idx]?.profile?.name || 'Pemain';
     addChatMessage('system', `${name} keluar`);
     broadcastFromHost({ type: 'lobby_state', players: MP.players, settings: MP.settings, roomCode: MP.roomCode });
     renderLobbyPlayers();
   } else {
-    // Mark as disconnected, replace with bot
     MP.players[idx].connected = false;
     addChatMessage('system', `${MP.players[idx].profile.name} terputus (diganti Bot)`);
     broadcastFromHost({
@@ -506,7 +481,6 @@ function handlePlayerDisconnect(peerId) {
       playerName: MP.players[idx].profile.name
     });
 
-    // If it was this player's turn, auto-pass
     if (G.currentIdx === idx && !G.gameOver) {
       setTimeout(() => {
         if (G.currentIdx === idx) {
@@ -528,7 +502,7 @@ function handleGuestData(data) {
       const joinBtn = $mp('btn-join-go');
       if (joinBtn) joinBtn.disabled = false;
       $mp('join-error').textContent = data.message;
-      destroyPeer();
+      destroyChannel();
       showScreen('join-room-screen');
       break;
     }
@@ -571,16 +545,53 @@ function handleGuestData(data) {
 
     case 'kicked': {
       showToast('❌ Kamu dikeluarkan dari room');
-      destroyPeer();
+      destroyChannel();
       showScreen('menu-screen');
       break;
     }
 
     case 'game_start': {
-      MP.gameStarted = true;
+      $mp('gameover-overlay').classList.add('hidden');
+      $mp('human-win-overlay').classList.add('hidden');
       startMultiplayerGame(data);
       break;
     }
+
+    case 'three_dump':
+      G.tableCards = data.tableCards;
+      G.currentIdx = data.startIdx;
+      G.roundLeaderIdx = data.startIdx;
+      
+      // Update hands
+      for (let i = 0; i < data.players.length; i++) {
+         G.players[i].handCount = data.players[i].handCount;
+      }
+      if (data.myHand) G.players[G.myIndex].hand = data.myHand;
+      
+      // UI update for 3-dump
+      const tableLabel = document.getElementById('table-label');
+      const tablePattern = document.getElementById('table-pattern');
+      const gameStatus = document.getElementById('game-status');
+      
+      if (tableLabel) tableLabel.textContent = 'Pembukaan: Semua kartu 3 dibuang!';
+      if (tablePattern) tablePattern.textContent = data.summary;
+      if (gameStatus) gameStatus.textContent = `${G.players[data.startIdx].name} menang pembukaan!`;
+      
+      if (typeof renderOpponents === 'function') renderOpponents();
+      if (typeof renderPlayerHand === 'function') renderPlayerHand();
+      
+      const cardsEl = document.getElementById('table-cards');
+      if (cardsEl) {
+        cardsEl.innerHTML = '';
+        for (const c of data.tableCards) {
+          if (typeof renderCardElement === 'function') {
+            cardsEl.appendChild(renderCardElement(c, false, false));
+          }
+        }
+      }
+      if (typeof playSound === 'function') playSound('play');
+      if (typeof mpThreeDumpHook === 'function') mpThreeDumpHook();
+      break;
 
     case 'game_state_update': {
       applyGameStateUpdate(data);
@@ -699,14 +710,9 @@ function renderLobbySettings() {
 }
 
 function kickPlayer(peerId) {
-  const c = MP.connections.find(x => x.peerId === peerId);
-  if (c) {
-    c.conn.send({ type: 'kicked' });
-    setTimeout(() => c.conn.close(), 200);
-  }
+  sendToPlayer(peerId, { type: 'kicked' });
   const name = MP.players.find(p => p.peerId === peerId)?.profile?.name || 'Pemain';
   MP.players = MP.players.filter(p => p.peerId !== peerId);
-  MP.connections = MP.connections.filter(c => c.peerId !== peerId);
   addChatMessage('system', `${name} dikeluarkan`);
   broadcastFromHost({ type: 'lobby_state', players: MP.players, settings: MP.settings, roomCode: MP.roomCode });
   renderLobbyPlayers();
@@ -724,7 +730,7 @@ function initLobbyUI() {
 
   // Leave
   $mp('lobby-leave').addEventListener('click', () => {
-    destroyPeer();
+    destroyChannel();
     MP.isMultiplayer = false;
     showScreen('menu-screen');
   });
@@ -773,12 +779,14 @@ function initLobbyUI() {
         senderProfile: profile,
         message: msg
       });
-    } else if (MP.hostConn) {
-      MP.hostConn.send({
-        type: 'chat',
-        senderName: profile.name,
-        senderProfile: profile,
-        message: msg
+    } else {
+      MP.channel.send({
+        type: 'broadcast', event: 'guest_msg', payload: { data: {
+          type: 'chat',
+          senderName: profile.name,
+          senderProfile: profile,
+          message: msg
+        }}
       });
     }
   };
@@ -879,12 +887,14 @@ function initIngameChatUI() {
         senderProfile: profile,
         message: msg
       });
-    } else if (MP.hostConn) {
-      MP.hostConn.send({
-        type: 'chat',
-        senderName: profile.name,
-        senderProfile: profile,
-        message: msg
+    } else {
+      MP.channel.send({
+        type: 'broadcast', event: 'guest_msg', payload: { data: {
+          type: 'chat',
+          senderName: profile.name,
+          senderProfile: profile,
+          message: msg
+        }}
       });
     }
   };
@@ -898,17 +908,21 @@ function initIngameChatUI() {
 /* ============================================================
  *  12. HOST — START GAME
  * ============================================================ */
-function hostStartGame() {
+function hostStartGame(isRestart = false) {
   MP.gameStarted = true;
 
   const activePlayers = MP.players.filter(p => p.connected);
   const numPlayers = activePlayers.length;
   const numDecks = MP.settings.decks;
 
+  if (isRestart && G.winners && G.winners.length > 0) {
+    G.previousWinnerIdx = G.winners[0];
+  }
+
   // Initialize game state on host
   G.numPlayers = numPlayers;
   G.numDecks = numDecks;
-  G.isFirstGame = true;
+  G.isFirstGame = !isRestart;
   G.difficulty = 'normal';
   initGame();
 
@@ -923,11 +937,7 @@ function hostStartGame() {
     G.players[i].isBot = false;
   }
 
-  // Find host's player index
-  const hostIdx = activePlayers.findIndex(p => p.peerId === MP.myPeerId);
-
   // Build the game start payload for guests
-  // Each guest gets their own hand, other hands are hidden
   for (let i = 0; i < numPlayers; i++) {
     const mp = activePlayers[i];
     if (mp.peerId === MP.myPeerId) continue; // host handles self
@@ -958,14 +968,35 @@ function hostStartGame() {
   showScreen('game-screen');
   $mp('ingame-chat-toggle')?.classList.remove('hidden');
 
-  showDealAnimation().then(() => {
+  showDealAnimation().then(async () => {
     renderGame();
-    // Skip 3-dump in multiplayer for simplicity, just start
-    addLog(`Game mulai! ${G.players[G.currentIdx].name} jalan duluan.`);
+    if (G.isFirstGame) {
+      // 3-dump check for the first game
+      await performThreeDump();
+    } else {
+      addLog(`Game mulai! ${G.players[G.currentIdx].name} jalan duluan.`);
+    }
     renderGame();
     hostScheduleTurn();
   });
 }
+
+window.mpThreeDumpHook = function(allThrees, startIdx, summary) {
+  if (MP.isHost) {
+    for (const p of MP.players) {
+      if (p.peerId === MP.myPeerId) continue;
+      const pIdx = G.players.findIndex(x => x.peerId === p.peerId);
+      sendToPlayer(p.peerId, {
+        type: 'three_dump',
+        tableCards: allThrees,
+        startIdx: startIdx,
+        summary: summary,
+        myHand: pIdx >= 0 ? G.players[pIdx].hand : null,
+        players: G.players.map(p => ({ handCount: p.hand.length }))
+      });
+    }
+  }
+};
 
 /* ============================================================
  *  13. GUEST — START GAME
@@ -1034,18 +1065,6 @@ function hostScheduleTurn() {
     G.busy = false;
     G.selectedIds.clear();
     renderGame();
-    startTurnTimer(() => {
-      // Auto pass on timeout
-      if (G.currentPattern) {
-        executePass(G.currentIdx);
-      } else {
-        // Must play, play smallest card
-        const hand = G.players[G.currentIdx].hand;
-        if (hand.length > 0) {
-          executePlay(G.currentIdx, [hand[0]]);
-        }
-      }
-    });
 
     // Your turn animation
     const anim = $mp('your-turn-anim');
@@ -1081,19 +1100,6 @@ function hostScheduleTurn() {
 
     // Broadcast turn info to all others
     broadcastGameState();
-
-    // Start silent timer for this player (no UI bar shown)
-    startTurnTimer(() => {
-      // Player timeout — auto pass or play
-      if (G.currentPattern) {
-        executePass(G.currentIdx);
-      } else {
-        const hand = G.players[G.currentIdx].hand;
-        if (hand.length > 0) {
-          executePlay(G.currentIdx, [hand[0]]);
-        }
-      }
-    }, false);  // isMyTurn = false → no visual bar
   }
 }
 
@@ -1119,15 +1125,15 @@ function broadcastGameState() {
   };
 
   // Send to each guest with their own hand
-  for (const c of MP.connections) {
-    if (!c.conn.open) continue;
-    const playerIdx = G.players.findIndex(p => p.peerId === c.peerId);
+  for (const p of MP.players) {
+    if (p.peerId === MP.myPeerId) continue;
+    const playerIdx = G.players.findIndex(x => x.peerId === p.peerId);
     const personalState = { ...state };
     if (playerIdx !== -1) {
       personalState.myHand = G.players[playerIdx].hand;
       personalState.myIndex = playerIdx;
     }
-    try { c.conn.send(personalState); } catch (e) { /* ignore */ }
+    sendToPlayer(p.peerId, personalState);
   }
 }
 
@@ -1151,19 +1157,6 @@ function handleYourTurn(data) {
   void anim.offsetWidth;
   anim.classList.add('play');
   playSound('yourTurn');
-
-  // Start local timer display
-  startTurnTimer(() => {
-    // Auto pass on timeout (send to host)
-    if (G.currentPattern) {
-      sendActionToHost({ action: 'pass' });
-    } else {
-      const hand = G.players[G.myIndex].hand;
-      if (hand.length > 0) {
-        sendActionToHost({ action: 'play', cardIds: [hand[0].id] });
-      }
-    }
-  });
 }
 
 function handleTurnInfo(data) {
@@ -1210,12 +1203,15 @@ function applyGameStateUpdate(data) {
   }
 }
 
-function sendActionToHost(action) {
-  if (!MP.hostConn || !MP.hostConn.open) return;
-  MP.hostConn.send({
-    type: 'game_action',
-    ...action,
-    playerPeerId: MP.myPeerId
+function sendActionToHost(action, payload) {
+  if (!MP.channel) return;
+  MP.channel.send({
+    type: 'broadcast', event: 'guest_msg', payload: { senderId: MP.myPeerId, data: {
+      type: 'game_action',
+      action,
+      ...payload,
+      playerPeerId: MP.myPeerId
+    }}
   });
 }
 
@@ -1263,60 +1259,11 @@ function handleMultiplayerAction(data) {
  *  17. TURN TIMER
  * ============================================================ */
 function startTurnTimer(onTimeout, isMyTurn = true) {
-  clearTurnTimer();
-
-  if (!MP.isMultiplayer) return;
-
-  MP.turnTimerValue = TURN_TIME;
-
-  // Only show the visible countdown bar for MY turn
-  if (isMyTurn) {
-    const timerBar = $mp('turn-timer-bar');
-    const timerFill = $mp('turn-timer-fill');
-    const timerText = $mp('turn-timer-text');
-
-    if (timerBar) timerBar.classList.remove('hidden');
-    if (timerText) {
-      timerText.classList.remove('hidden');
-      timerText.textContent = `${TURN_TIME}s`;
-      timerText.classList.remove('urgent');
-    }
-    if (timerFill) timerFill.style.width = '100%';
-
-    MP.turnTimer = setInterval(() => {
-      MP.turnTimerValue--;
-      const pct = (MP.turnTimerValue / TURN_TIME) * 100;
-      if (timerFill) timerFill.style.width = `${pct}%`;
-      if (timerText) {
-        timerText.textContent = `${MP.turnTimerValue}s`;
-        if (MP.turnTimerValue <= 5) timerText.classList.add('urgent');
-      }
-      if (MP.turnTimerValue <= 0) {
-        clearTurnTimer();
-        if (onTimeout) onTimeout();
-      }
-    }, 1000);
-  } else {
-    // Other player's turn — just run a silent background countdown, no UI
-    MP.turnTimer = setInterval(() => {
-      MP.turnTimerValue--;
-      if (MP.turnTimerValue <= 0) {
-        clearTurnTimer();
-        if (onTimeout) onTimeout();
-      }
-    }, 1000);
-  }
+  // Timer dihapus secara total sesuai permintaan
 }
 
 function clearTurnTimer() {
-  if (MP.turnTimer) {
-    clearInterval(MP.turnTimer);
-    MP.turnTimer = null;
-  }
-  const timerBar = $mp('turn-timer-bar');
-  const timerText = $mp('turn-timer-text');
-  if (timerBar) timerBar.classList.add('hidden');
-  if (timerText) timerText.classList.add('hidden');
+  // Timer dihapus secara total sesuai permintaan
 }
 
 /* ============================================================
@@ -1480,7 +1427,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Back to menu from disconnect
   $mp('btn-back-menu')?.addEventListener('click', () => {
     $mp('disconnect-overlay')?.classList.add('hidden');
-    destroyPeer();
+    destroyChannel();
     MP.isMultiplayer = false;
     showScreen('menu-screen');
   });

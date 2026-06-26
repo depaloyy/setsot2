@@ -267,10 +267,7 @@
       <div id="round-badge" class="round-badge">Putaran 1</div>
     </header>
 
-    <!-- Turn timer bar -->
-    <div id="turn-timer-bar" class="turn-timer-bar hidden">
-      <div id="turn-timer-fill" class="turn-timer-fill"></div>
-    </div>
+
 
     <!-- Opponents row -->
     <section class="opponents" id="opponents"></section>
@@ -309,7 +306,6 @@
     <section class="player-section">
       <div class="hand-info">
         <span id="hand-count">13 kartu</span>
-        <span id="turn-timer-text" class="turn-timer-text hidden">30s</span>
       </div>
       <div class="player-hand" id="player-hand"></div>
       <div class="action-bar">
@@ -375,7 +371,8 @@
   <!-- Toast container -->
   <div id="toast-container"></div>
 
-  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <!-- Supabase SDK untuk Realtime Multiplayer -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="game.js"></script>
   <script src="multiplayer.js"></script>
 </body>

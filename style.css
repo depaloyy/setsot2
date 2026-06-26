@@ -658,29 +658,7 @@ body{
   padding:5px 14px;border-radius:20px;
 }
 
-/* --- Turn Timer Bar --- */
-.turn-timer-bar{
-  height:3px;
-  background:rgba(255,255,255,0.06);
-  flex-shrink:0;
-  overflow:hidden;
-}
-.turn-timer-bar.hidden{display:none}
-.turn-timer-fill{
-  height:100%;
-  background:linear-gradient(90deg,#34C759,#FFD60A,#FF3B30);
-  width:100%;
-  transition:width 1s linear;
-  border-radius:0 2px 2px 0;
-}
-.turn-timer-text{
-  font-size:12px;font-weight:700;
-  color:#FFD60A;
-  font-variant-numeric:tabular-nums;
-}
-.turn-timer-text.hidden{display:none}
-.turn-timer-text.urgent{color:#FF3B30;animation:timerPulse .5s ease infinite}
-@keyframes timerPulse{0%,100%{opacity:1}50%{opacity:0.4}}
+
 
 /* --- Opponents --- */
 .opponents{
