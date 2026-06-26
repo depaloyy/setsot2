@@ -339,9 +339,9 @@ function generateId() {
   return Math.random().toString(36).substring(2, 10);
 }
 
-function initChannel(roomCode, isHost = false) {
+function initChannel(roomCode, isHost = false, preserveState = false) {
   return new Promise((resolve, reject) => {
-    destroyChannel();
+    destroyChannel(preserveState);
     
     let storedId = localStorage.getItem('setsot_client_id');
     if (!storedId) {
@@ -368,6 +368,11 @@ function initChannel(roomCode, isHost = false) {
         if (payload.target && payload.target !== MP.myPeerId) return;
         if (payload.exclude && payload.exclude === MP.myPeerId) return;
         handleGuestData(payload.data);
+      });
+      MP.channel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
+        for (const presence of leftPresences) {
+          handleHostDisconnect(presence.peerId);
+        }
       });
     }
 
@@ -405,15 +410,17 @@ function initChannel(roomCode, isHost = false) {
   });
 }
 
-function destroyChannel() {
+function destroyChannel(preserveState = false) {
   if (MP.channel) {
     try { supabaseClient.removeChannel(MP.channel); } catch(e){}
     MP.channel = null;
   }
-  MP.connections = [];
-  MP.players = [];
-  MP.gameStarted = false;
-  clearTurnTimer();
+  if (!preserveState) {
+    MP.connections = [];
+    MP.players = [];
+    MP.gameStarted = false;
+    clearTurnTimer();
+  }
 }
 
 function handleHostData(senderId, data) {
@@ -424,6 +431,11 @@ function handleHostData(senderId, data) {
       if (MP.gameStarted && existingPlayerIdx !== -1) {
         // Rejoining player!
         MP.players[existingPlayerIdx].connected = true;
+        
+        // If they were the host but we are now the host, demote them to guest
+        if (MP.players[existingPlayerIdx].isHost) {
+          MP.players[existingPlayerIdx].isHost = false;
+        }
         
         // Find corresponding G.player
         const gPlayerIdx = G.players.findIndex(p => p.peerId === senderId);
@@ -462,6 +474,7 @@ function handleHostData(senderId, data) {
           })),
           logs: G.logs.slice(-8),
           myHand: G.players[gPlayerIdx].hand,
+          allHands: G.players.map(p => p.hand),
           myIndex: gPlayerIdx
         };
         sendToPlayer(senderId, personalState);
@@ -1253,6 +1266,7 @@ function broadcastGameState() {
       profile: p.profile,
       peerId: p.peerId
     })),
+    allHands: G.players.map(p => p.hand),
     logs: G.logs.slice(-8)
   };
 
@@ -1811,4 +1825,93 @@ async function autoRejoinRoom(code) {
   } finally {
     MP.reconnecting = false;
   }
+}
+
+function handleHostDisconnect(peerId) {
+  const hostPlayer = MP.players.find(p => p.isHost);
+  if (hostPlayer && hostPlayer.peerId === peerId) {
+    // Mark host as disconnected in MP.players
+    hostPlayer.connected = false;
+    hostPlayer.isHost = false; // They are no longer host
+    
+    // Choose new host: the first active connected player
+    const nextHost = MP.players.find(p => p.connected);
+    if (nextHost) {
+      nextHost.isHost = true;
+      addChatMessage('system', `${nextHost.profile.name} sekarang menjadi Host baru!`);
+      
+      if (nextHost.peerId === MP.myPeerId) {
+        // I am the new host!
+        promoteToHost();
+      } else {
+        // Someone else is the new host
+        addChatMessage('system', `Peralihan Host ke ${nextHost.profile.name}...`);
+      }
+    } else {
+      // No one else is connected, terminate
+      showHostDisconnectOverlay();
+    }
+  }
+}
+
+async function promoteToHost() {
+  MP.isHost = true;
+  
+  try {
+    // Re-initialize channel as host, preserving state
+    await initChannel(MP.roomCode, true, true);
+    
+    // Track presence as host
+    await MP.channel.track({ peerId: MP.myPeerId });
+
+    // Update G.players to set peerId flags or local parameters
+    const myGIdx = G.players.findIndex(p => p.peerId === MP.myPeerId);
+    if (myGIdx !== -1) {
+      G.myIndex = myGIdx;
+    }
+    
+    // Broadcast the new host state to everyone
+    broadcastGameState();
+    
+    // If it is currently our turn or the AI bot's turn, trigger it!
+    hostScheduleTurn();
+    
+    addChatMessage('system', 'Anda sekarang adalah Host permainan.');
+  } catch (err) {
+    console.error('Promotion to host failed:', err);
+    showHostDisconnectOverlay();
+  }
+}
+
+function showHostDisconnectOverlay() {
+  if (document.getElementById('host-disconnect-overlay')) return;
+  
+  $mp('disconnect-overlay')?.classList.add('hidden');
+  document.querySelectorAll('[id^="vote-overlay-"]').forEach(el => el.remove());
+
+  const div = document.createElement('div');
+  div.id = 'host-disconnect-overlay';
+  div.className = 'overlay';
+  div.style.zIndex = '150';
+
+  div.innerHTML = `
+    <div class="overlay-card" style="padding: 24px; text-align: center;">
+      <div class="overlay-icon" style="font-size: 40px; margin-bottom: 8px;">🏠</div>
+      <h3 style="margin-bottom: 8px; font-size: 18px; font-weight: 700; color: #1D1D1F;">Host Terputus</h3>
+      <p style="font-size: 14px; margin-bottom: 24px; color: #636366;">
+        Host telah meninggalkan room atau terputus. Permainan dihentikan.
+      </p>
+      <button class="btn-primary btn-exit-menu" style="height: 40px; font-size: 14px;">Kembali ke Menu</button>
+    </div>
+  `;
+
+  div.querySelector('.btn-exit-menu').addEventListener('click', () => {
+    div.remove();
+    localStorage.removeItem('setsot_active_room');
+    destroyChannel();
+    MP.isMultiplayer = false;
+    showScreen('menu-screen');
+  });
+
+  document.body.appendChild(div);
 }
