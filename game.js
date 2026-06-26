@@ -1020,8 +1020,8 @@ function renderOpponents() {
       name = isMe ? 'Kamu' : p.name;
     }
 
-    // Card count: use hand.length if available, else handCount
-    const cardCount = p.hand ? p.hand.length : (p.handCount || 0);
+    // Card count: use hand.length if available (and > 0), else handCount
+    const cardCount = getPlayerHandCount(i);
     
     let countHtml = `<span class="opp-count">${cardCount} kartu</span>`;
     if (isWinner) {
@@ -1682,6 +1682,7 @@ function setupListeners() {
     if (aiTimeoutId) { clearTimeout(aiTimeoutId); aiTimeoutId = null; }
     if (typeof clearTurnTimer === 'function') clearTurnTimer();
     if (typeof MP !== 'undefined' && MP.isMultiplayer) {
+      localStorage.removeItem('setsot_active_room');
       if (typeof destroyChannel === 'function') destroyChannel();
       MP.isMultiplayer = false;
     }

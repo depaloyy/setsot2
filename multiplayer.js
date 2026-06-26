@@ -218,6 +218,7 @@ function initCreateRoomUI() {
 
   $mp('btn-create-go').addEventListener('click', () => createRoom());
   $mp('create-back').addEventListener('click', () => {
+    localStorage.removeItem('setsot_active_room');
     destroyChannel();
     showScreen('menu-screen');
   });
@@ -278,6 +279,7 @@ function initJoinRoomUI() {
 
   $mp('btn-join-go').addEventListener('click', () => joinRoom());
   $mp('join-back').addEventListener('click', () => {
+    localStorage.removeItem('setsot_active_room');
     destroyChannel();
     showScreen('menu-screen');
   });
@@ -306,6 +308,7 @@ async function joinRoom() {
     MP.isMultiplayer = true;
     MP.roomCode = code;
     MP.gameStarted = false;
+    localStorage.setItem('setsot_active_room', code);
     
     // Send join request via broadcast
     const profile = ProfileMgr.get();
@@ -377,16 +380,19 @@ function initChannel(roomCode, isHost = false) {
         hasResolved = true;
         resolve(MP.myPeerId);
       }
-      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
         if (!hasResolved) {
           reject(new Error('Koneksi gagal atau timeout'));
         } else if (MP.isMultiplayer && MP.gameStarted) {
           showDisconnectOverlay();
-        }
-      }
-      if (status === 'CLOSED') {
-        if (MP.isMultiplayer && MP.gameStarted) {
-          showDisconnectOverlay();
+          // Attempt auto-reconnection after a delay
+          if (!MP.isHost && MP.roomCode) {
+            setTimeout(() => {
+              if (MP.isMultiplayer && MP.gameStarted) {
+                autoRejoinRoom(MP.roomCode);
+              }
+            }, 3000);
+          }
         }
       }
     });
@@ -654,6 +660,7 @@ function handleGuestData(data) {
 
     case 'kicked': {
       showToast('❌ Kamu dikeluarkan dari room');
+      localStorage.removeItem('setsot_active_room');
       destroyChannel();
       showScreen('menu-screen');
       break;
@@ -839,6 +846,7 @@ function initLobbyUI() {
 
   // Leave
   $mp('lobby-leave').addEventListener('click', () => {
+    localStorage.removeItem('setsot_active_room');
     destroyChannel();
     MP.isMultiplayer = false;
     showScreen('menu-screen');
@@ -890,12 +898,15 @@ function initLobbyUI() {
       });
     } else {
       MP.channel.send({
-        type: 'broadcast', event: 'guest_msg', payload: { data: {
-          type: 'chat',
-          senderName: profile.name,
-          senderProfile: profile,
-          message: msg
-        }}
+        type: 'broadcast', event: 'guest_msg', payload: {
+          senderId: MP.myPeerId,
+          data: {
+            type: 'chat',
+            senderName: profile.name,
+            senderProfile: profile,
+            message: msg
+          }
+        }
       });
     }
   };
@@ -998,12 +1009,15 @@ function initIngameChatUI() {
       });
     } else {
       MP.channel.send({
-        type: 'broadcast', event: 'guest_msg', payload: { data: {
-          type: 'chat',
-          senderName: profile.name,
-          senderProfile: profile,
-          message: msg
-        }}
+        type: 'broadcast', event: 'guest_msg', payload: {
+          senderId: MP.myPeerId,
+          data: {
+            type: 'chat',
+            senderName: profile.name,
+            senderProfile: profile,
+            message: msg
+          }
+        }
       });
     }
   };
@@ -1280,7 +1294,9 @@ function handleYourTurn(data) {
 function handleTurnInfo(data) {
   G.currentIdx = data.currentIdx;
   G.busy = true;
-  renderGame();
+  if (G.players && G.players.length > 0) {
+    renderGame();
+  }
 }
 
 function applyGameStateUpdate(data) {
@@ -1293,6 +1309,43 @@ function applyGameStateUpdate(data) {
   G.winners = data.winners || [];
   G.passedPlayers = new Set(data.passedPlayers || []);
   G.logs = data.logs || G.logs;
+
+  if (data.players) {
+    G.numPlayers = data.players.length;
+  }
+
+  // Safely initialize G.players if it doesn't exist or is empty
+  if ((!G.players || G.players.length === 0) && data.players) {
+    G.players = data.players.map((pd, idx) => ({
+      name: pd.name,
+      hand: (idx === data.myIndex) ? (data.myHand || []) : [],
+      isHuman: (idx === data.myIndex),
+      avatar: pd.avatar,
+      profile: pd.profile,
+      peerId: pd.peerId,
+      handCount: pd.handCount,
+      isBot: false
+    }));
+    G.myIndex = data.myIndex;
+  }
+
+  // Safely initialize MP.players if it doesn't exist or is empty
+  if ((!MP.players || MP.players.length === 0) && data.players) {
+    MP.players = data.players.map(pd => ({
+      peerId: pd.peerId,
+      profile: pd.profile || { name: pd.name, symbol: pd.avatar },
+      isHost: false,
+      connected: true
+    }));
+  }
+
+  // Ensure game is marked started and game-screen is visible
+  if (!MP.gameStarted) {
+    MP.gameStarted = true;
+    showScreen('game-screen');
+    const badge = $mp('ingame-chat-toggle');
+    if (badge) badge.classList.remove('hidden');
+  }
 
   // Update player hand counts
   for (let i = 0; i < data.players.length && i < G.players.length; i++) {
@@ -1323,11 +1376,20 @@ function applyGameStateUpdate(data) {
 
 function sendActionToHost(action, payload) {
   if (!MP.channel) return;
+  
+  let actionStr = action;
+  let finalPayload = payload || {};
+  if (typeof action === 'object' && action !== null) {
+    actionStr = action.action;
+    finalPayload = { ...action };
+    delete finalPayload.action;
+  }
+
   MP.channel.send({
     type: 'broadcast', event: 'guest_msg', payload: { senderId: MP.myPeerId, data: {
       type: 'game_action',
-      action,
-      ...payload,
+      action: actionStr,
+      ...finalPayload,
       playerPeerId: MP.myPeerId
     }}
   });
@@ -1502,6 +1564,12 @@ document.addEventListener('DOMContentLoaded', () => {
   initLobbyUI();
   initIngameChatUI();
 
+  // Auto rejoin if active room exists
+  const activeRoom = localStorage.getItem('setsot_active_room');
+  if (activeRoom) {
+    autoRejoinRoom(activeRoom);
+  }
+
   // Menu buttons
   $mp('btn-solo').addEventListener('click', () => {
     MP.isMultiplayer = false;
@@ -1534,6 +1602,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Back to menu from disconnect
   $mp('btn-back-menu')?.addEventListener('click', () => {
+    localStorage.removeItem('setsot_active_room');
     $mp('disconnect-overlay')?.classList.add('hidden');
     destroyChannel();
     MP.isMultiplayer = false;
@@ -1580,7 +1649,31 @@ function hideVoteOverlay(peerId) {
 }
 
 function submitVote(peerId, voteType) {
-  hideVoteOverlay(peerId);
+  // Update UI to highlight selected vote type instead of hiding immediately
+  const overlay = document.getElementById('vote-overlay-' + peerId);
+  if (overlay) {
+    overlay.querySelectorAll('.btn-primary').forEach(btn => {
+      btn.style.opacity = '0.6';
+      btn.style.border = 'none';
+    });
+    const activeBtn = overlay.querySelector('.vote-btn-' + voteType);
+    if (activeBtn) {
+      activeBtn.style.opacity = '1';
+      activeBtn.style.border = '2px solid #007AFF';
+    }
+    let statusEl = overlay.querySelector('.vote-status');
+    if (!statusEl) {
+      statusEl = document.createElement('p');
+      statusEl.className = 'vote-status';
+      statusEl.style.fontSize = '13px';
+      statusEl.style.color = '#8E8E93';
+      statusEl.style.marginTop = '12px';
+      statusEl.style.marginBottom = '0';
+      overlay.querySelector('.overlay-card').appendChild(statusEl);
+    }
+    const label = voteType === 'bot' ? 'Gantikan Bot' : voteType === 'kick' ? 'Kick' : 'Tunggu';
+    statusEl.textContent = `Pilihan kamu: ${label}. Menunggu pilihan pemain lain...`;
+  }
   
   if (MP.isHost) {
     handleVoteCast(MP.myPeerId, peerId, voteType);
@@ -1617,6 +1710,7 @@ function handleVoteCast(voterPeerId, targetPeerId, voteType) {
 
   const botVotes = MP.votes[targetPeerId].bot.size;
   const kickVotes = MP.votes[targetPeerId].kick.size;
+  const waitVotes = MP.votes[targetPeerId].wait.size;
 
   const majority = Math.floor(totalVoters / 2) + 1;
 
@@ -1624,6 +1718,8 @@ function handleVoteCast(voterPeerId, targetPeerId, voteType) {
     executeVoteAction(targetPeerId, 'bot');
   } else if (kickVotes >= majority) {
     executeVoteAction(targetPeerId, 'kick');
+  } else if (waitVotes >= majority) {
+    executeVoteAction(targetPeerId, 'wait');
   }
 }
 
@@ -1675,7 +1771,44 @@ function applyVoteResult(targetPeerId, actionType) {
         setTimeout(() => startNewRound(G.roundLeaderIdx), 900);
       }
     }
+  } else if (actionType === 'wait') {
+    addLog(`Voting selesai: Menunggu <strong>${playerName}</strong> kembali.`);
   }
 
   if (typeof renderOpponents === 'function') renderOpponents();
+}
+
+async function autoRejoinRoom(code) {
+  if (MP.reconnecting) return;
+  MP.reconnecting = true;
+  try {
+    showDisconnectOverlay();
+    
+    await initChannel(code, false);
+    MP.isHost = false;
+    MP.isMultiplayer = true;
+    MP.roomCode = code;
+    MP.gameStarted = false;
+    
+    $mp('disconnect-overlay')?.classList.add('hidden');
+    
+    const profile = ProfileMgr.get();
+    MP.channel.send({
+      type: 'broadcast',
+      event: 'guest_msg',
+      payload: {
+        senderId: MP.myPeerId,
+        data: {
+          type: 'join',
+          profile: profile
+        }
+      }
+    });
+  } catch (err) {
+    console.error('Auto rejoin failed:', err);
+    $mp('disconnect-overlay')?.classList.add('hidden');
+    showScreen('menu-screen');
+  } finally {
+    MP.reconnecting = false;
+  }
 }
