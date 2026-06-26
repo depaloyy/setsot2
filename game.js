@@ -792,13 +792,7 @@ function executePlay(playerIdx, cards) {
       }
 
       renderGame();
-      const myIdx = isMP ? G.myIndex : 0;
-      const humanRank = G.winners.indexOf(myIdx) + 1;
-      if (humanRank > 0) {
-        showHumanWinOverlay(humanRank);
-      } else {
-        showGameOver();
-      }
+      showGameOver();
       return;
     } else {
       const isMP = typeof MP !== 'undefined' && MP.isMultiplayer;
@@ -1000,11 +994,15 @@ function renderOpponents() {
     const winRank = G.winners ? G.winners.indexOf(i) : -1;
     const isWinner = winRank !== -1;
     
+    const mpPlayer = isMP ? MP.players.find(x => x.peerId === p.peerId) : null;
+    const isDisconnected = mpPlayer && !mpPlayer.connected;
+    
     const div = document.createElement('div');
     div.className = 'opp-card'
       + (G.currentIdx === i && !G.gameOver && !isWinner ? ' active-turn' : '')
       + (G.passedPlayers.has(i) ? ' passed' : '')
-      + (isWinner ? ' winner' : '');
+      + (isWinner ? ' winner' : '')
+      + (isDisconnected ? ' disconnected' : '');
       
     const isMe = (i === myIdx);
     let avatar, name, avatarStyle = '';
@@ -1012,6 +1010,9 @@ function renderOpponents() {
     if (isMP && p.profile) {
       avatar = p.profile.symbol;
       name = isMe ? `${p.name} (Kamu)` : p.name;
+      if (isDisconnected) {
+        name = `${p.name} (Bot)`;
+      }
       const c = p.profile.color;
       avatarStyle = `background:${hexToRGBA(c,0.2)};color:${c};`;
     } else {
@@ -1227,8 +1228,11 @@ function updateButtons() {
   const myIdx = isMP ? G.myIndex : 0;
   
   btnSkip.style.display = 'none';
+  btnSkip.classList.add('hidden');
   btnPlay.style.display = 'block';
+  btnPlay.classList.remove('hidden');
   btnPass.style.display = 'block';
+  btnPass.classList.remove('hidden');
 
   if (G.gameOver) {
     btnPlay.disabled = true; btnPass.disabled = true; return;
@@ -1239,8 +1243,11 @@ function updateButtons() {
     // human finished
     if (!isMP) {
       btnPlay.style.display = 'none';
+      btnPlay.classList.add('hidden');
       btnPass.style.display = 'none';
+      btnPass.classList.add('hidden');
       btnSkip.style.display = 'block';
+      btnSkip.classList.remove('hidden');
     } else {
       btnPlay.disabled = true;
       btnPass.disabled = true;
@@ -1417,11 +1424,12 @@ function showGameOver() {
     }
   }
 
-  if (G.winners[0] === 0) {
+  const myIdx = (typeof MP !== 'undefined' && MP.isMultiplayer) ? G.myIndex : 0;
+  if (G.winners[0] === myIdx) {
     title.textContent = 'Menang!';
     title.style.color = '#30D158';
     playSound('win');
-  } else if (G.winners[G.winners.length - 1] === 0) {
+  } else if (G.winners[G.winners.length - 1] === myIdx) {
     title.textContent = 'Kalah!';
     title.style.color = '#E5342E';
   } else {

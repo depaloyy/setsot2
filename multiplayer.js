@@ -91,6 +91,19 @@ function renderAvatarStyle(el, profile) {
   el.style.boxShadow = `0 2px 12px ${hexToRGBA(profile.color, 0.25)}`;
 }
 
+function mergeHandPreservingOrder(localHand, hostHand) {
+  if (!hostHand) return [];
+  const hostCardIds = new Set(hostHand.map(c => c.id));
+  const updatedHand = localHand.filter(c => hostCardIds.has(c.id));
+  const localCardIds = new Set(updatedHand.map(c => c.id));
+  for (const c of hostHand) {
+    if (!localCardIds.has(c.id)) {
+      updatedHand.push(c);
+    }
+  }
+  return updatedHand;
+}
+
 /* ============================================================
  *  4. PROFILE UI
  * ============================================================ */
@@ -326,7 +339,13 @@ function generateId() {
 function initChannel(roomCode, isHost = false) {
   return new Promise((resolve, reject) => {
     destroyChannel();
-    MP.myPeerId = generateId();
+    
+    let storedId = localStorage.getItem('setsot_client_id');
+    if (!storedId) {
+      storedId = generateId();
+      localStorage.setItem('setsot_client_id', storedId);
+    }
+    MP.myPeerId = storedId;
     
     MP.channel = supabaseClient.channel('room-' + roomCode, {
       config: { presence: { key: MP.myPeerId } }
@@ -349,15 +368,26 @@ function initChannel(roomCode, isHost = false) {
       });
     }
 
+    let hasResolved = false;
     MP.channel.subscribe(async (status) => {
       if (status === 'SUBSCRIBED') {
         if (!isHost) {
            await MP.channel.track({ peerId: MP.myPeerId });
         }
+        hasResolved = true;
         resolve(MP.myPeerId);
       }
       if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-        reject(new Error('Koneksi gagal atau timeout'));
+        if (!hasResolved) {
+          reject(new Error('Koneksi gagal atau timeout'));
+        } else if (MP.isMultiplayer && MP.gameStarted) {
+          showDisconnectOverlay();
+        }
+      }
+      if (status === 'CLOSED') {
+        if (MP.isMultiplayer && MP.gameStarted) {
+          showDisconnectOverlay();
+        }
       }
     });
 
@@ -383,6 +413,69 @@ function destroyChannel() {
 function handleHostData(senderId, data) {
   switch (data.type) {
     case 'join': {
+      // Check if this player is rejoining an active game
+      const existingPlayerIdx = MP.players.findIndex(p => p.peerId === senderId);
+      if (MP.gameStarted && existingPlayerIdx !== -1) {
+        // Rejoining player!
+        MP.players[existingPlayerIdx].connected = true;
+        
+        // Find corresponding G.player
+        const gPlayerIdx = G.players.findIndex(p => p.peerId === senderId);
+        if (gPlayerIdx !== -1) {
+          G.players[gPlayerIdx].isBot = false; // Stop bot play
+          G.players[gPlayerIdx].replacedByBot = false;
+        }
+
+        addChatMessage('system', `${data.profile.name} terhubung kembali!`);
+        hideVoteOverlay(senderId);
+        
+        // Notify others
+        broadcastFromHost({
+          type: 'player_reconnected',
+          peerId: senderId,
+          playerName: data.profile.name
+        });
+
+        // Send current lobby state & game state to the rejoining player
+        const personalState = {
+          type: 'game_state_update',
+          currentIdx: G.currentIdx,
+          roundLeaderIdx: G.roundLeaderIdx,
+          currentPattern: G.currentPattern,
+          tableCards: G.tableCards,
+          roundNum: G.roundNum,
+          gameOver: G.gameOver,
+          winners: G.winners || [],
+          passedPlayers: [...G.passedPlayers],
+          players: G.players.map(p => ({
+            name: p.name,
+            handCount: p.hand.length,
+            avatar: p.avatar,
+            profile: p.profile,
+            peerId: p.peerId
+          })),
+          logs: G.logs.slice(-8),
+          myHand: G.players[gPlayerIdx].hand,
+          myIndex: gPlayerIdx
+        };
+        sendToPlayer(senderId, personalState);
+        
+        // If it is currently their turn, trigger 'your_turn' to wake them up
+        if (G.currentIdx === gPlayerIdx && !G.gameOver) {
+          sendToPlayer(senderId, {
+            type: 'your_turn',
+            currentPattern: G.currentPattern,
+            tableCards: G.tableCards,
+            hand: G.players[gPlayerIdx].hand,
+            roundNum: G.roundNum,
+            currentIdx: G.currentIdx
+          });
+        }
+        
+        if (typeof renderOpponents === 'function') renderOpponents();
+        return;
+      }
+
       const activePlayers = MP.players.filter(p => p.connected);
       if (activePlayers.length >= MP.settings.maxPlayers) {
         sendToPlayer(senderId, { type: 'error', message: 'Room penuh' });
@@ -467,27 +560,27 @@ function handlePlayerDisconnect(peerId) {
   if (idx === -1) return;
 
   if (!MP.gameStarted) {
-    MP.players.splice(idx, 1);
     const name = MP.players[idx]?.profile?.name || 'Pemain';
+    MP.players.splice(idx, 1);
     addChatMessage('system', `${name} keluar`);
     broadcastFromHost({ type: 'lobby_state', players: MP.players, settings: MP.settings, roomCode: MP.roomCode });
     renderLobbyPlayers();
   } else {
     MP.players[idx].connected = false;
-    addChatMessage('system', `${MP.players[idx].profile.name} terputus (diganti Bot)`);
+    addChatMessage('system', `${MP.players[idx].profile.name} terputus (Menunggu voting...)`);
     broadcastFromHost({
       type: 'player_disconnected',
       peerId,
       playerName: MP.players[idx].profile.name
     });
+    if (typeof renderOpponents === 'function') renderOpponents();
 
-    if (G.currentIdx === idx && !G.gameOver) {
-      setTimeout(() => {
-        if (G.currentIdx === idx) {
-          performAITurn();
-        }
-      }, 1000);
-    }
+    // Set up voting state on host
+    if (!MP.votes) MP.votes = {};
+    MP.votes[peerId] = { bot: new Set(), kick: new Set() };
+    
+    // Show voting UI locally for the host (if host is still in the game)
+    showVoteOverlay(peerId, MP.players[idx].profile.name);
   }
 }
 
@@ -526,9 +619,25 @@ function handleGuestData(data) {
     }
 
     case 'player_disconnected': {
-      addChatMessage('system', `${data.playerName} terputus (diganti Bot)`);
+      addChatMessage('system', `${data.playerName} terputus (Menunggu voting...)`);
       const p = MP.players.find(x => x.peerId === data.peerId);
       if (p) p.connected = false;
+      if (typeof renderOpponents === 'function') renderOpponents();
+      showVoteOverlay(data.peerId, data.playerName);
+      break;
+    }
+
+    case 'player_reconnected': {
+      addChatMessage('system', `${data.playerName} terhubung kembali!`);
+      const p = MP.players.find(x => x.peerId === data.peerId);
+      if (p) p.connected = true;
+      hideVoteOverlay(data.peerId);
+      if (typeof renderOpponents === 'function') renderOpponents();
+      break;
+    }
+
+    case 'vote_resolved': {
+      applyVoteResult(data.targetPeerId, data.actionType);
       break;
     }
 
@@ -1075,15 +1184,24 @@ function hostScheduleTurn() {
 
     // Notify all guests whose turn it is
     broadcastGameState();
-  } else if (isDisconnected) {
-    // Bot plays for disconnected player
+  } else if (isDisconnected && p.replacedByBot) {
+    // Bot plays for disconnected player who has been voted to be replaced
     G.busy = true;
     renderGame();
     broadcastGameState();
+    const targetIdx = G.currentIdx;
     setTimeout(() => {
       G.busy = false;
-      performAITurn();
+      if (G.currentIdx === targetIdx && p.replacedByBot) {
+        performAITurn();
+      }
     }, 1500 + Math.random() * 1000);
+  } else if (isDisconnected && !p.replacedByBot) {
+    // Disconnected player who has NOT been voted to be replaced yet:
+    // Game waits, do nothing (wait for voting)
+    G.busy = true;
+    renderGame();
+    broadcastGameState();
   } else {
     // Another player's turn — notify them
     G.busy = true;
@@ -1141,8 +1259,8 @@ function broadcastGameState() {
  *  15. GUEST — HANDLE TURNS
  * ============================================================ */
 function handleYourTurn(data) {
-  // Update my hand
-  G.players[G.myIndex].hand = data.hand;
+  // Update my hand, preserving local drag-and-drop order
+  G.players[G.myIndex].hand = mergeHandPreservingOrder(G.players[G.myIndex].hand, data.hand);
   G.currentPattern = data.currentPattern;
   G.tableCards = data.tableCards;
   G.roundNum = data.roundNum;
@@ -1182,9 +1300,9 @@ function applyGameStateUpdate(data) {
     G.players[i].name = data.players[i].name;
   }
 
-  // Update own hand if provided
+  // Update own hand if provided, preserving local drag-and-drop order
   if (data.myHand) {
-    G.players[data.myIndex].hand = data.myHand;
+    G.players[data.myIndex].hand = mergeHandPreservingOrder(G.players[data.myIndex].hand, data.myHand);
   }
 
   // Am I the current player?
@@ -1220,7 +1338,13 @@ function sendActionToHost(action, payload) {
  * ============================================================ */
 function handleMultiplayerAction(data) {
   if (!MP.isHost) return;
-  const playerIdx = G.players.findIndex(p => p.peerId === data.playerPeerId);
+  
+  if (data.action === 'vote') {
+    handleVoteCast(data.playerPeerId, data.targetPeerId, data.voteType);
+    return;
+  }
+
+  const playerIdx = G.players.findIndex(p => p.playerPeerId === data.playerPeerId || p.peerId === data.playerPeerId);
   if (playerIdx === -1 || playerIdx !== G.currentIdx) return;
 
   clearTurnTimer();
@@ -1272,23 +1396,7 @@ function clearTurnTimer() {
 function handleMultiplayerGameOver(data) {
   G.gameOver = true;
   clearTurnTimer();
-
-  const myIdx = MP.isHost
-    ? G.players.findIndex(p => p.peerId === MP.myPeerId)
-    : G.myIndex;
-
-  const winners = data.winners || G.winners || [];
-  const myRank = winners.indexOf(myIdx) + 1;
-
-  if (myRank === 1) {
-    showHumanWinOverlay(1);
-  } else if (myRank === G.numPlayers) {
-    showHumanWinOverlay(G.numPlayers);
-  } else if (myRank > 0) {
-    showHumanWinOverlay(myRank);
-  } else {
-    showGameOver();
-  }
+  showGameOver();
 }
 
 /* ============================================================
@@ -1432,3 +1540,142 @@ document.addEventListener('DOMContentLoaded', () => {
     showScreen('menu-screen');
   });
 });
+
+/* ============================================================
+ *  22. VOTING & RECONNECT SYSTEM
+ * ============================================================ */
+function showVoteOverlay(peerId, playerName) {
+  if (document.getElementById('vote-overlay-' + peerId)) return;
+
+  const div = document.createElement('div');
+  div.id = 'vote-overlay-' + peerId;
+  div.className = 'overlay';
+  div.style.zIndex = '140';
+
+  div.innerHTML = `
+    <div class="overlay-card" style="padding: 24px;">
+      <div class="overlay-icon" style="font-size: 40px; margin-bottom: 8px;">🗳️</div>
+      <h3 style="margin-bottom: 8px; font-size: 18px; font-weight: 700; color: #1D1D1F;">Pemain Terputus</h3>
+      <p style="font-size: 14px; margin-bottom: 16px; color: #636366;">
+        <strong>${playerName}</strong> terputus. Pilih tindakan untuk melanjutkan permainan:
+      </p>
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <button class="btn-primary vote-btn-bot" style="height: 40px; font-size: 14px;">🤖 Gantikan dengan Bot</button>
+        <button class="btn-primary vote-btn-kick" style="height: 40px; font-size: 14px; background: #FF3B30; box-shadow: 0 2px 8px rgba(255,59,48,0.25);">❌ Kick Pemain</button>
+        <button class="btn-primary vote-btn-wait" style="height: 40px; font-size: 14px; background: #E5E5EA; color: #1D1D1F; box-shadow: none;">⏳ Tunggu Pemain</button>
+      </div>
+    </div>
+  `;
+
+  div.querySelector('.vote-btn-bot').addEventListener('click', () => submitVote(peerId, 'bot'));
+  div.querySelector('.vote-btn-kick').addEventListener('click', () => submitVote(peerId, 'kick'));
+  div.querySelector('.vote-btn-wait').addEventListener('click', () => submitVote(peerId, 'wait'));
+
+  document.body.appendChild(div);
+}
+
+function hideVoteOverlay(peerId) {
+  const el = document.getElementById('vote-overlay-' + peerId);
+  if (el) el.remove();
+}
+
+function submitVote(peerId, voteType) {
+  hideVoteOverlay(peerId);
+  
+  if (MP.isHost) {
+    handleVoteCast(MP.myPeerId, peerId, voteType);
+  } else {
+    sendActionToHost({
+      action: 'vote',
+      targetPeerId: peerId,
+      voteType: voteType
+    });
+  }
+}
+
+function handleVoteCast(voterPeerId, targetPeerId, voteType) {
+  if (!MP.isHost) return;
+  if (!MP.votes) MP.votes = {};
+  if (!MP.votes[targetPeerId]) {
+    MP.votes[targetPeerId] = { bot: new Set(), kick: new Set(), wait: new Set() };
+  }
+
+  MP.votes[targetPeerId].bot.delete(voterPeerId);
+  MP.votes[targetPeerId].kick.delete(voterPeerId);
+  MP.votes[targetPeerId].wait.delete(voterPeerId);
+
+  if (voteType === 'bot') {
+    MP.votes[targetPeerId].bot.add(voterPeerId);
+  } else if (voteType === 'kick') {
+    MP.votes[targetPeerId].kick.add(voterPeerId);
+  } else {
+    MP.votes[targetPeerId].wait.add(voterPeerId);
+  }
+
+  const activeConnected = MP.players.filter(p => p.connected && p.peerId !== targetPeerId);
+  const totalVoters = activeConnected.length;
+
+  const botVotes = MP.votes[targetPeerId].bot.size;
+  const kickVotes = MP.votes[targetPeerId].kick.size;
+
+  const majority = Math.floor(totalVoters / 2) + 1;
+
+  if (botVotes >= majority) {
+    executeVoteAction(targetPeerId, 'bot');
+  } else if (kickVotes >= majority) {
+    executeVoteAction(targetPeerId, 'kick');
+  }
+}
+
+function executeVoteAction(targetPeerId, actionType) {
+  if (!MP.isHost) return;
+  
+  if (MP.votes) delete MP.votes[targetPeerId];
+
+  broadcastFromHost({
+    type: 'vote_resolved',
+    targetPeerId,
+    actionType
+  });
+
+  applyVoteResult(targetPeerId, actionType);
+}
+
+function applyVoteResult(targetPeerId, actionType) {
+  hideVoteOverlay(targetPeerId);
+
+  const idx = G.players.findIndex(p => p.peerId === targetPeerId);
+  if (idx === -1) return;
+
+  const playerName = G.players[idx].name;
+
+  if (actionType === 'bot') {
+    G.players[idx].isBot = true;
+    G.players[idx].replacedByBot = true;
+    addLog(`Voting selesai: <strong>${playerName}</strong> digantikan oleh Bot.`);
+    
+    if (G.currentIdx === idx && !G.gameOver) {
+      const targetIdx = G.currentIdx;
+      setTimeout(() => {
+        if (G.currentIdx === targetIdx && G.players[targetIdx].replacedByBot) {
+          performAITurn();
+        }
+      }, 1000);
+    }
+  } else if (actionType === 'kick') {
+    addLog(`Voting selesai: <strong>${playerName}</strong> di-kick dari permainan.`);
+    
+    G.players[idx].hand = [];
+    G.players[idx].handCount = 0;
+    
+    if (G.currentIdx === idx && !G.gameOver) {
+      executePass(idx);
+    } else {
+      if (typeof isRoundOver === 'function' && isRoundOver()) {
+        setTimeout(() => startNewRound(G.roundLeaderIdx), 900);
+      }
+    }
+  }
+
+  if (typeof renderOpponents === 'function') renderOpponents();
+}
