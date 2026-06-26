@@ -984,9 +984,11 @@ function renderGame() {
 /* --- Opponents --- */
 function renderOpponents() {
   const el = $('opponents');
+  if (!el) return;
   el.innerHTML = '';
   const isMP = typeof MP !== 'undefined' && MP.isMultiplayer;
   const myIdx = isMP ? G.myIndex : 0;
+  if (isMP && G.myIndex === undefined) return; // waiting player
 
   for (let i = 0; i < G.numPlayers; i++) {
     const p = G.players[i];
@@ -1068,9 +1070,11 @@ let dragSrcIndex = null;
 
 function renderPlayerHand() {
   const el = $('player-hand');
+  if (!el) return;
   el.innerHTML = '';
   const isMP = typeof MP !== 'undefined' && MP.isMultiplayer;
   const myIdx = isMP ? G.myIndex : 0;
+  if (isMP && G.myIndex === undefined) return; // waiting player
   const hand = G.players[myIdx].hand;
   $('hand-count').textContent = `${hand.length} kartu`;
 

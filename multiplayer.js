@@ -272,9 +272,13 @@ function initJoinRoomUI() {
   const input = $mp('join-code-input');
   input.value = '';
   $mp('join-error').textContent = '';
+  $mp('join-spinner')?.classList.add('hidden');
+  const btnGo = $mp('btn-join-go');
+  if (btnGo) btnGo.disabled = false;
 
   input.addEventListener('input', () => {
     input.value = input.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    $mp('join-error').textContent = ''; // Clear error when typing!
   });
 
   $mp('btn-join-go').addEventListener('click', () => joinRoom());
@@ -359,8 +363,14 @@ function initChannel(roomCode, isHost = false, preserveState = false) {
         handleHostData(payload.senderId, payload.data);
       });
       MP.channel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
+        const presenceState = MP.channel.presenceState();
         for (const presence of leftPresences) {
-           handlePlayerDisconnect(presence.peerId);
+           const peerId = presence.peerId;
+           if (presenceState[peerId] && presenceState[peerId].length > 0) {
+             console.log(`Presence leave ignored for ${peerId} (still online)`);
+             continue;
+           }
+           handlePlayerDisconnect(peerId);
         }
       });
     } else {
@@ -370,8 +380,13 @@ function initChannel(roomCode, isHost = false, preserveState = false) {
         handleGuestData(payload.data);
       });
       MP.channel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
+        const presenceState = MP.channel.presenceState();
         for (const presence of leftPresences) {
-          handleHostDisconnect(presence.peerId);
+          const peerId = presence.peerId;
+          if (presenceState[peerId] && presenceState[peerId].length > 0) {
+            continue;
+          }
+          handleHostDisconnect(peerId);
         }
       });
     }
@@ -500,8 +515,37 @@ function handleHostData(senderId, data) {
         sendToPlayer(senderId, { type: 'error', message: 'Room penuh' });
         return;
       }
+      
+      // If game has started, add them as a waiting player in the lobby
       if (MP.gameStarted) {
-        sendToPlayer(senderId, { type: 'error', message: 'Game sudah dimulai' });
+        const playerInfo = {
+          peerId: senderId,
+          profile: data.profile,
+          isHost: false,
+          connected: true
+        };
+        MP.players.push(playerInfo);
+        
+        sendToPlayer(senderId, {
+          type: 'lobby_state',
+          players: MP.players.map(p => ({
+            peerId: p.peerId,
+            profile: p.profile,
+            isHost: p.isHost,
+            connected: p.connected
+          })),
+          settings: MP.settings,
+          roomCode: MP.roomCode,
+          gameInProgress: true
+        });
+        
+        addChatMessage('system', `${data.profile.name} bergabung (Menunggu game selesai)`);
+        
+        broadcastFromHost({
+          type: 'player_joined',
+          player: playerInfo,
+          players: MP.players
+        });
         return;
       }
 
@@ -627,6 +671,15 @@ function handleGuestData(data) {
       MP.settings = data.settings;
       MP.roomCode = data.roomCode;
       showLobby();
+
+      if (data.gameInProgress) {
+        const waitMsg = $mp('lobby-wait-msg');
+        if (waitMsg) {
+          waitMsg.textContent = 'Permainan sedang berlangsung. Harap tunggu hingga game selesai...';
+          waitMsg.classList.remove('hidden');
+        }
+        $mp('btn-lobby-start')?.classList.add('hidden');
+      }
       break;
     }
 
@@ -944,6 +997,10 @@ function addChatMessage(sender, message, senderProfile) {
   // Render in game chat if visible
   if (MP.gameStarted) {
     renderChatLog('ingame-chat-log');
+    
+    // Show transient preview bubble
+    showTransientChatBubble(sender, message);
+
     // Show badge if panel closed
     const panel = $mp('ingame-chat-panel');
     if (panel && panel.classList.contains('hidden')) {
@@ -995,6 +1052,11 @@ function initIngameChatUI() {
         MP.unreadChat = 0;
         $mp('ingame-chat-badge').classList.add('hidden');
         renderChatLog('ingame-chat-log');
+        
+        // Remove transient bubble immediately if panel is opened
+        const bubble = document.getElementById('ingame-chat-bubble');
+        if (bubble) bubble.remove();
+        if (transientChatTimeout) clearTimeout(transientChatTimeout);
       }
     });
   }
@@ -1306,6 +1368,7 @@ function handleYourTurn(data) {
 }
 
 function handleTurnInfo(data) {
+  if (G.myIndex === undefined) return; // waiting player
   G.currentIdx = data.currentIdx;
   G.busy = true;
   if (G.players && G.players.length > 0) {
@@ -1314,6 +1377,19 @@ function handleTurnInfo(data) {
 }
 
 function applyGameStateUpdate(data) {
+  // If we are a waiting player not in the game, just update MP.players (so we have the lobby list) but do not join the game screen!
+  if (data.myIndex === undefined) {
+    if (data.players) {
+      MP.players = data.players.map(pd => ({
+        peerId: pd.peerId,
+        profile: pd.profile || { name: pd.name, symbol: pd.avatar },
+        isHost: false,
+        connected: true
+      }));
+    }
+    return;
+  }
+
   G.currentIdx = data.currentIdx;
   G.roundLeaderIdx = data.roundLeaderIdx;
   G.currentPattern = data.currentPattern;
@@ -1628,6 +1704,7 @@ document.addEventListener('DOMContentLoaded', () => {
  *  22. VOTING & RECONNECT SYSTEM
  * ============================================================ */
 function showVoteOverlay(peerId, playerName) {
+  if (peerId === MP.myPeerId) return; // Do not show voting popup to the player who left/disconnected
   if (document.getElementById('vote-overlay-' + peerId)) return;
 
   const div = document.createElement('div');
@@ -1764,7 +1841,7 @@ function applyVoteResult(targetPeerId, actionType) {
     G.players[idx].replacedByBot = true;
     addLog(`Voting selesai: <strong>${playerName}</strong> digantikan oleh Bot.`);
     
-    if (G.currentIdx === idx && !G.gameOver) {
+    if (MP.isHost && G.currentIdx === idx && !G.gameOver) {
       const targetIdx = G.currentIdx;
       setTimeout(() => {
         if (G.currentIdx === targetIdx && G.players[targetIdx].replacedByBot) {
@@ -1778,11 +1855,13 @@ function applyVoteResult(targetPeerId, actionType) {
     G.players[idx].hand = [];
     G.players[idx].handCount = 0;
     
-    if (G.currentIdx === idx && !G.gameOver) {
-      executePass(idx);
-    } else {
-      if (typeof isRoundOver === 'function' && isRoundOver()) {
-        setTimeout(() => startNewRound(G.roundLeaderIdx), 900);
+    if (MP.isHost) {
+      if (G.currentIdx === idx && !G.gameOver) {
+        executePass(idx);
+      } else {
+        if (typeof isRoundOver === 'function' && isRoundOver()) {
+          setTimeout(() => startNewRound(G.roundLeaderIdx), 900);
+        }
       }
     }
   } else if (actionType === 'wait') {
@@ -1825,6 +1904,67 @@ async function autoRejoinRoom(code) {
   } finally {
     MP.reconnecting = false;
   }
+}
+
+let transientChatTimeout = null;
+
+function showTransientChatBubble(sender, message) {
+  // If panel is open, do not show transient bubble
+  const panel = $mp('ingame-chat-panel');
+  if (panel && !panel.classList.contains('hidden')) return;
+
+  let bubble = document.getElementById('ingame-chat-bubble');
+  if (!bubble) {
+    bubble = document.createElement('div');
+    bubble.id = 'ingame-chat-bubble';
+    bubble.style.position = 'fixed';
+    bubble.style.bottom = '250px';
+    bubble.style.right = '16px';
+    bubble.style.backgroundColor = 'rgba(29, 29, 31, 0.9)';
+    bubble.style.backdropFilter = 'blur(10px)';
+    bubble.style.webkitBackdropFilter = 'blur(10px)';
+    bubble.style.color = '#FFFFFF';
+    bubble.style.padding = '8px 14px';
+    bubble.style.borderRadius = '16px';
+    bubble.style.fontSize = '13px';
+    bubble.style.fontWeight = '500';
+    bubble.style.boxShadow = '0 8px 24px rgba(0, 0, 0, 0.15)';
+    bubble.style.zIndex = '60';
+    bubble.style.maxWidth = '250px';
+    bubble.style.whiteSpace = 'nowrap';
+    bubble.style.overflow = 'hidden';
+    bubble.style.textOverflow = 'ellipsis';
+    bubble.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+    bubble.style.transform = 'translateY(10px)';
+    bubble.style.opacity = '0';
+    bubble.style.pointerEvents = 'none';
+    document.body.appendChild(bubble);
+  }
+
+  const senderLabel = sender === 'system' ? '📢 System' : sender;
+  bubble.innerHTML = `<strong>${senderLabel}</strong>: ${message}`;
+
+  // Animate in
+  requestAnimationFrame(() => {
+    bubble.style.transform = 'translateY(0)';
+    bubble.style.opacity = '1';
+  });
+
+  // Clear existing timeout
+  if (transientChatTimeout) {
+    clearTimeout(transientChatTimeout);
+  }
+
+  // Set timeout to animate out and remove
+  transientChatTimeout = setTimeout(() => {
+    bubble.style.transform = 'translateY(-10px)';
+    bubble.style.opacity = '0';
+    setTimeout(() => {
+      if (bubble.parentNode) {
+        bubble.remove();
+      }
+    }, 300); // Wait for transition to finish
+  }, 3500);
 }
 
 function handleHostDisconnect(peerId) {
