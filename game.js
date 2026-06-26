@@ -751,6 +751,36 @@ function _addJokerBombPlays(hand, out) {
  *  7.  GAME LOGIC  (play, pass, advance, end-round)
  * ============================================================ */
 
+function checkGameOver() {
+  const activeUnfinished = G.players.map((p, i) => i).filter(i => !G.winners.includes(i) && !G.players[i].isKicked);
+  if (activeUnfinished.length <= 1) {
+    // Put the last active unfinished player(s) into G.winners
+    for (const idx of activeUnfinished) {
+      G.winners.push(idx);
+    }
+    // Put any kicked players at the very end
+    for (let i = 0; i < G.numPlayers; i++) {
+      if (!G.winners.includes(i)) {
+        G.winners.push(i);
+      }
+    }
+    G.gameOver = true;
+
+    // Multiplayer: broadcast game over then show overlay
+    const isMP = typeof MP !== 'undefined' && MP.isMultiplayer;
+    if (isMP && MP.isHost) {
+      broadcastGameState();
+      handleMultiplayerGameOver({ winners: G.winners });
+      return true;
+    }
+
+    renderGame();
+    showGameOver();
+    return true;
+  }
+  return false;
+}
+
 function executePlay(playerIdx, cards) {
   const player  = G.players[playerIdx];
   const pattern = detectPattern(cards);
@@ -777,29 +807,12 @@ function executePlay(playerIdx, cards) {
       addLog(`<strong>${player.name}</strong> selesai! (Juara ${G.winners.length})`);
     }
 
-    if (G.winners.length >= G.numPlayers - 1) {
-      for(let i=0; i<G.numPlayers; i++) {
-         if(!G.winners.includes(i)) G.winners.push(i);
-      }
-      G.gameOver = true;
+    if (checkGameOver()) return;
 
-      // Multiplayer: broadcast game over then show overlay
-      const isMP = typeof MP !== 'undefined' && MP.isMultiplayer;
-      if (isMP && MP.isHost) {
-        broadcastGameState();
-        handleMultiplayerGameOver({ winners: G.winners });
-        return;
-      }
-
-      renderGame();
-      showGameOver();
-      return;
-    } else {
-      const isMP = typeof MP !== 'undefined' && MP.isMultiplayer;
-      const myIdx = isMP ? G.myIndex : 0;
-      if (playerIdx === myIdx && !isMP) {
-         showHumanWinOverlay(G.winners.indexOf(myIdx) + 1);
-      }
+    const isMP = typeof MP !== 'undefined' && MP.isMultiplayer;
+    const myIdx = isMP ? G.myIndex : 0;
+    if (playerIdx === myIdx && !isMP) {
+       showHumanWinOverlay(G.winners.indexOf(myIdx) + 1);
     }
   }
 
@@ -1413,6 +1426,7 @@ function showHumanWinOverlay(rank) {
 }
 
 function showGameOver() {
+  $('human-win-overlay').classList.add('hidden');
   $('gameover-overlay').classList.remove('hidden');
   const title = $('gameover-title');
   const desc  = $('gameover-desc');

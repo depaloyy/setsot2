@@ -243,6 +243,7 @@ async function createRoom() {
     MP.isHost = true;
     MP.isMultiplayer = true;
     MP.gameStarted = false;
+    localStorage.setItem('setsot_active_room', MP.roomCode);
 
     const profile = ProfileMgr.get();
     MP.players = [{
@@ -394,9 +395,7 @@ function initChannel(roomCode, isHost = false, preserveState = false) {
     let hasResolved = false;
     MP.channel.subscribe(async (status) => {
       if (status === 'SUBSCRIBED') {
-        if (!isHost) {
-           await MP.channel.track({ peerId: MP.myPeerId });
-        }
+        await MP.channel.track({ peerId: MP.myPeerId });
         hasResolved = true;
         resolve(MP.myPeerId);
       }
@@ -406,7 +405,7 @@ function initChannel(roomCode, isHost = false, preserveState = false) {
         } else if (MP.isMultiplayer && MP.gameStarted) {
           showDisconnectOverlay();
           // Attempt auto-reconnection after a delay
-          if (!MP.isHost && MP.roomCode) {
+          if (MP.roomCode) {
             setTimeout(() => {
               if (MP.isMultiplayer && MP.gameStarted) {
                 autoRejoinRoom(MP.roomCode);
@@ -472,6 +471,8 @@ function handleHostData(senderId, data) {
         // Send current lobby state & game state to the rejoining player
         const personalState = {
           type: 'game_state_update',
+          hostPeerId: MP.myPeerId,
+          chatMessages: MP.chatMessages,
           currentIdx: G.currentIdx,
           roundLeaderIdx: G.roundLeaderIdx,
           currentPattern: G.currentPattern,
@@ -485,7 +486,10 @@ function handleHostData(senderId, data) {
             handCount: p.hand.length,
             avatar: p.avatar,
             profile: p.profile,
-            peerId: p.peerId
+            peerId: p.peerId,
+            isKicked: p.isKicked,
+            isBot: p.isBot,
+            replacedByBot: p.replacedByBot
           })),
           logs: G.logs.slice(-8),
           myHand: G.players[gPlayerIdx].hand,
@@ -640,7 +644,7 @@ function handlePlayerDisconnect(peerId) {
 
     // Set up voting state on host
     if (!MP.votes) MP.votes = {};
-    MP.votes[peerId] = { bot: new Set(), kick: new Set() };
+    MP.votes[peerId] = { bot: new Set(), kick: new Set(), wait: new Set() };
     
     // Show voting UI locally for the host (if host is still in the game)
     showVoteOverlay(peerId, MP.players[idx].profile.name);
@@ -1056,7 +1060,14 @@ function initIngameChatUI() {
         // Remove transient bubble immediately if panel is opened
         const bubble = document.getElementById('ingame-chat-bubble');
         if (bubble) bubble.remove();
-        if (transientChatTimeout) clearTimeout(transientChatTimeout);
+        if (transientChatTimeout) {
+          clearTimeout(transientChatTimeout);
+          transientChatTimeout = null;
+        }
+        if (transientChatFadeoutTimeout) {
+          clearTimeout(transientChatFadeoutTimeout);
+          transientChatFadeoutTimeout = null;
+        }
       }
     });
   }
@@ -1107,7 +1118,12 @@ function initIngameChatUI() {
  *  12. HOST — START GAME
  * ============================================================ */
 function hostStartGame(isRestart = false) {
+  $mp('gameover-overlay')?.classList.add('hidden');
+  $mp('human-win-overlay')?.classList.add('hidden');
+  document.querySelectorAll('[id^="vote-overlay-"]').forEach(el => el.remove());
+
   MP.gameStarted = true;
+  localStorage.setItem('setsot_active_room', MP.roomCode);
 
   const activePlayers = MP.players.filter(p => p.connected);
   const numPlayers = activePlayers.length;
@@ -1201,6 +1217,7 @@ window.mpThreeDumpHook = function(allThrees, startIdx, summary) {
  * ============================================================ */
 function startMultiplayerGame(data) {
   MP.gameStarted = true;
+  localStorage.setItem('setsot_active_room', MP.roomCode);
   const { myIndex, numPlayers, numDecks, players, currentIdx, roundLeaderIdx } = data;
 
   G.numPlayers = numPlayers;
@@ -1313,6 +1330,7 @@ function hostScheduleTurn() {
 function broadcastGameState() {
   const state = {
     type: 'game_state_update',
+    hostPeerId: MP.myPeerId,
     currentIdx: G.currentIdx,
     roundLeaderIdx: G.roundLeaderIdx,
     currentPattern: G.currentPattern,
@@ -1326,7 +1344,10 @@ function broadcastGameState() {
       handCount: p.hand.length,
       avatar: p.avatar,
       profile: p.profile,
-      peerId: p.peerId
+      peerId: p.peerId,
+      isKicked: p.isKicked,
+      isBot: p.isBot,
+      replacedByBot: p.replacedByBot
     })),
     allHands: G.players.map(p => p.hand),
     logs: G.logs.slice(-8)
@@ -1414,7 +1435,9 @@ function applyGameStateUpdate(data) {
       profile: pd.profile,
       peerId: pd.peerId,
       handCount: pd.handCount,
-      isBot: false
+      isBot: pd.isBot,
+      replacedByBot: pd.replacedByBot,
+      isKicked: pd.isKicked
     }));
     G.myIndex = data.myIndex;
   }
@@ -1424,9 +1447,13 @@ function applyGameStateUpdate(data) {
     MP.players = data.players.map(pd => ({
       peerId: pd.peerId,
       profile: pd.profile || { name: pd.name, symbol: pd.avatar },
-      isHost: false,
+      isHost: data.hostPeerId ? (pd.peerId === data.hostPeerId) : false,
       connected: true
     }));
+  } else if (data.hostPeerId) {
+    for (const p of MP.players) {
+      p.isHost = (p.peerId === data.hostPeerId);
+    }
   }
 
   // Ensure game is marked started and game-screen is visible
@@ -1437,15 +1464,32 @@ function applyGameStateUpdate(data) {
     if (badge) badge.classList.remove('hidden');
   }
 
-  // Update player hand counts
+  // Update player hand counts and sync hands for all players
   for (let i = 0; i < data.players.length && i < G.players.length; i++) {
     G.players[i].handCount = data.players[i].handCount;
     G.players[i].name = data.players[i].name;
+    G.players[i].isKicked = data.players[i].isKicked;
+    G.players[i].isBot = data.players[i].isBot;
+    G.players[i].replacedByBot = data.players[i].replacedByBot;
+  }
+
+  if (data.allHands) {
+    for (let i = 0; i < G.players.length; i++) {
+      if (i !== G.myIndex && data.allHands[i]) {
+        G.players[i].hand = data.allHands[i];
+      }
+    }
   }
 
   // Update own hand if provided, preserving local drag-and-drop order
   if (data.myHand) {
     G.players[data.myIndex].hand = mergeHandPreservingOrder(G.players[data.myIndex].hand, data.myHand);
+  }
+
+  if (data.chatMessages) {
+    MP.chatMessages = data.chatMessages;
+    renderChatLog('lobby-chat-log');
+    renderChatLog('ingame-chat-log');
   }
 
   // Am I the current player?
@@ -1547,6 +1591,7 @@ function clearTurnTimer() {
  * ============================================================ */
 function handleMultiplayerGameOver(data) {
   G.gameOver = true;
+  localStorage.removeItem('setsot_active_room');
   clearTurnTimer();
   showGameOver();
 }
@@ -1555,6 +1600,9 @@ function handleMultiplayerGameOver(data) {
  *  19. DISCONNECT HANDLING
  * ============================================================ */
 function showDisconnectOverlay() {
+  $mp('gameover-overlay')?.classList.add('hidden');
+  $mp('human-win-overlay')?.classList.add('hidden');
+  document.querySelectorAll('[id^="vote-overlay-"]').forEach(el => el.remove());
   $mp('disconnect-overlay')?.classList.remove('hidden');
 }
 
@@ -1705,6 +1753,7 @@ document.addEventListener('DOMContentLoaded', () => {
  * ============================================================ */
 function showVoteOverlay(peerId, playerName) {
   if (peerId === MP.myPeerId) return; // Do not show voting popup to the player who left/disconnected
+  if (!MP.gameStarted || G.gameOver) return; // Do not show voting overlay in lobby or after game is over
   if (document.getElementById('vote-overlay-' + peerId)) return;
 
   const div = document.createElement('div');
@@ -1721,8 +1770,8 @@ function showVoteOverlay(peerId, playerName) {
       </p>
       <div style="display: flex; flex-direction: column; gap: 8px;">
         <button class="btn-primary vote-btn-bot" style="height: 40px; font-size: 14px;">🤖 Gantikan dengan Bot</button>
-        <button class="btn-primary vote-btn-kick" style="height: 40px; font-size: 14px; background: #FF3B30; box-shadow: 0 2px 8px rgba(255,59,48,0.25);">❌ Kick Pemain</button>
-        <button class="btn-primary vote-btn-wait" style="height: 40px; font-size: 14px; background: #E5E5EA; color: #1D1D1F; box-shadow: none;">⏳ Tunggu Pemain</button>
+        <button class="btn-danger vote-btn-kick" style="height: 40px; font-size: 14px;">❌ Kick Pemain</button>
+        <button class="btn-secondary vote-btn-wait" style="height: 40px; font-size: 14px;">⏳ Tunggu Pemain</button>
       </div>
     </div>
   `;
@@ -1743,14 +1792,15 @@ function submitVote(peerId, voteType) {
   // Update UI to highlight selected vote type instead of hiding immediately
   const overlay = document.getElementById('vote-overlay-' + peerId);
   if (overlay) {
-    overlay.querySelectorAll('.btn-primary').forEach(btn => {
+    overlay.querySelectorAll('button').forEach(btn => {
       btn.style.opacity = '0.6';
-      btn.style.border = 'none';
+      btn.style.outline = 'none';
     });
     const activeBtn = overlay.querySelector('.vote-btn-' + voteType);
     if (activeBtn) {
       activeBtn.style.opacity = '1';
-      activeBtn.style.border = '2px solid #007AFF';
+      activeBtn.style.outline = '2px solid #007AFF';
+      activeBtn.style.outlineOffset = '2px';
     }
     let statusEl = overlay.querySelector('.vote-status');
     if (!statusEl) {
@@ -1782,6 +1832,10 @@ function handleVoteCast(voterPeerId, targetPeerId, voteType) {
   if (!MP.votes) MP.votes = {};
   if (!MP.votes[targetPeerId]) {
     MP.votes[targetPeerId] = { bot: new Set(), kick: new Set(), wait: new Set() };
+  } else {
+    if (!MP.votes[targetPeerId].bot) MP.votes[targetPeerId].bot = new Set();
+    if (!MP.votes[targetPeerId].kick) MP.votes[targetPeerId].kick = new Set();
+    if (!MP.votes[targetPeerId].wait) MP.votes[targetPeerId].wait = new Set();
   }
 
   MP.votes[targetPeerId].bot.delete(voterPeerId);
@@ -1803,6 +1857,7 @@ function handleVoteCast(voterPeerId, targetPeerId, voteType) {
   const kickVotes = MP.votes[targetPeerId].kick.size;
   const waitVotes = MP.votes[targetPeerId].wait.size;
 
+  const totalVotesCast = botVotes + kickVotes + waitVotes;
   const majority = Math.floor(totalVoters / 2) + 1;
 
   if (botVotes >= majority) {
@@ -1811,6 +1866,15 @@ function handleVoteCast(voterPeerId, targetPeerId, voteType) {
     executeVoteAction(targetPeerId, 'kick');
   } else if (waitVotes >= majority) {
     executeVoteAction(targetPeerId, 'wait');
+  } else if (totalVotesCast >= totalVoters) {
+    // Deadlock / tie: resolve using host's vote as tie-breaker
+    let hostVote = 'wait'; // default fallback
+    if (MP.votes[targetPeerId].bot.has(MP.myPeerId)) {
+      hostVote = 'bot';
+    } else if (MP.votes[targetPeerId].kick.has(MP.myPeerId)) {
+      hostVote = 'kick';
+    }
+    executeVoteAction(targetPeerId, hostVote);
   }
 }
 
@@ -1854,8 +1918,11 @@ function applyVoteResult(targetPeerId, actionType) {
     
     G.players[idx].hand = [];
     G.players[idx].handCount = 0;
+    G.players[idx].isKicked = true;
     
     if (MP.isHost) {
+      if (checkGameOver()) return;
+      
       if (G.currentIdx === idx && !G.gameOver) {
         executePass(idx);
       } else {
@@ -1907,63 +1974,84 @@ async function autoRejoinRoom(code) {
 }
 
 let transientChatTimeout = null;
+let transientChatFadeoutTimeout = null;
 
 function showTransientChatBubble(sender, message) {
   // If panel is open, do not show transient bubble
   const panel = $mp('ingame-chat-panel');
   if (panel && !panel.classList.contains('hidden')) return;
 
-  let bubble = document.getElementById('ingame-chat-bubble');
-  if (!bubble) {
-    bubble = document.createElement('div');
-    bubble.id = 'ingame-chat-bubble';
-    bubble.style.position = 'fixed';
-    bubble.style.bottom = '250px';
-    bubble.style.right = '16px';
-    bubble.style.backgroundColor = 'rgba(29, 29, 31, 0.9)';
-    bubble.style.backdropFilter = 'blur(10px)';
-    bubble.style.webkitBackdropFilter = 'blur(10px)';
-    bubble.style.color = '#FFFFFF';
-    bubble.style.padding = '8px 14px';
-    bubble.style.borderRadius = '16px';
-    bubble.style.fontSize = '13px';
-    bubble.style.fontWeight = '500';
-    bubble.style.boxShadow = '0 8px 24px rgba(0, 0, 0, 0.15)';
-    bubble.style.zIndex = '60';
-    bubble.style.maxWidth = '250px';
-    bubble.style.whiteSpace = 'nowrap';
-    bubble.style.overflow = 'hidden';
-    bubble.style.textOverflow = 'ellipsis';
-    bubble.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
-    bubble.style.transform = 'translateY(10px)';
-    bubble.style.opacity = '0';
-    bubble.style.pointerEvents = 'none';
-    document.body.appendChild(bubble);
+  // Clear existing timeouts
+  if (transientChatTimeout) {
+    clearTimeout(transientChatTimeout);
+    transientChatTimeout = null;
   }
+  if (transientChatFadeoutTimeout) {
+    clearTimeout(transientChatFadeoutTimeout);
+    transientChatFadeoutTimeout = null;
+  }
+
+  // Remove existing bubble if any to restart animation cleanly
+  const oldBubble = document.getElementById('ingame-chat-bubble');
+  if (oldBubble) {
+    oldBubble.remove();
+  }
+
+  // Create new bubble
+  const bubble = document.createElement('div');
+  bubble.id = 'ingame-chat-bubble';
+  bubble.style.position = 'fixed';
+  bubble.style.bottom = '250px';
+  bubble.style.right = '16px';
+  bubble.style.backgroundColor = 'rgba(29, 29, 31, 0.9)';
+  bubble.style.backdropFilter = 'blur(10px)';
+  bubble.style.webkitBackdropFilter = 'blur(10px)';
+  bubble.style.color = '#FFFFFF';
+  bubble.style.padding = '8px 14px';
+  bubble.style.borderRadius = '16px';
+  bubble.style.fontSize = '13px';
+  bubble.style.fontWeight = '500';
+  bubble.style.boxShadow = '0 8px 24px rgba(0, 0, 0, 0.15)';
+  bubble.style.zIndex = '60';
+  bubble.style.maxWidth = '250px';
+  bubble.style.whiteSpace = 'nowrap';
+  bubble.style.overflow = 'hidden';
+  bubble.style.textOverflow = 'ellipsis';
+  bubble.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+  bubble.style.transform = 'translateY(10px)';
+  bubble.style.opacity = '0';
+  bubble.style.pointerEvents = 'none';
+  document.body.appendChild(bubble);
 
   const senderLabel = sender === 'system' ? '📢 System' : sender;
   bubble.innerHTML = `<strong>${senderLabel}</strong>: ${message}`;
 
   // Animate in
   requestAnimationFrame(() => {
-    bubble.style.transform = 'translateY(0)';
-    bubble.style.opacity = '1';
+    setTimeout(() => {
+      const currentBubble = document.getElementById('ingame-chat-bubble');
+      if (currentBubble) {
+        currentBubble.style.transform = 'translateY(0)';
+        currentBubble.style.opacity = '1';
+      }
+    }, 50);
   });
-
-  // Clear existing timeout
-  if (transientChatTimeout) {
-    clearTimeout(transientChatTimeout);
-  }
 
   // Set timeout to animate out and remove
   transientChatTimeout = setTimeout(() => {
-    bubble.style.transform = 'translateY(-10px)';
-    bubble.style.opacity = '0';
-    setTimeout(() => {
-      if (bubble.parentNode) {
-        bubble.remove();
-      }
-    }, 300); // Wait for transition to finish
+    const currentBubble = document.getElementById('ingame-chat-bubble');
+    if (currentBubble) {
+      currentBubble.style.transform = 'translateY(-10px)';
+      currentBubble.style.opacity = '0';
+      transientChatFadeoutTimeout = setTimeout(() => {
+        const checkBubble = document.getElementById('ingame-chat-bubble');
+        if (checkBubble && checkBubble.parentNode) {
+          checkBubble.remove();
+        }
+        transientChatFadeoutTimeout = null;
+      }, 300); // Wait for transition to finish
+    }
+    transientChatTimeout = null;
   }, 3500);
 }
 
@@ -1973,6 +2061,9 @@ function handleHostDisconnect(peerId) {
     // Mark host as disconnected in MP.players
     hostPlayer.connected = false;
     hostPlayer.isHost = false; // They are no longer host
+    
+    // Clear existing vote overlays since host is changing and votes are reset
+    document.querySelectorAll('[id^="vote-overlay-"]').forEach(el => el.remove());
     
     // Choose new host: the first active connected player
     const nextHost = MP.players.find(p => p.connected);
@@ -2017,6 +2108,19 @@ async function promoteToHost() {
     hostScheduleTurn();
     
     addChatMessage('system', 'Anda sekarang adalah Host permainan.');
+
+    // Initiate voting for any currently disconnected players (especially the old host)
+    for (const p of MP.players) {
+      if (!p.connected && p.peerId !== MP.myPeerId) {
+        const gIdx = G.players.findIndex(gp => gp.peerId === p.peerId);
+        if (gIdx !== -1) {
+          const gp = G.players[gIdx];
+          if (!gp.replacedByBot && getPlayerHandCount(gIdx) > 0) {
+            handlePlayerDisconnect(p.peerId);
+          }
+        }
+      }
+    }
   } catch (err) {
     console.error('Promotion to host failed:', err);
     showHostDisconnectOverlay();
@@ -2027,6 +2131,8 @@ function showHostDisconnectOverlay() {
   if (document.getElementById('host-disconnect-overlay')) return;
   
   $mp('disconnect-overlay')?.classList.add('hidden');
+  $mp('gameover-overlay')?.classList.add('hidden');
+  $mp('human-win-overlay')?.classList.add('hidden');
   document.querySelectorAll('[id^="vote-overlay-"]').forEach(el => el.remove());
 
   const div = document.createElement('div');
