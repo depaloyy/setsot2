@@ -68,6 +68,16 @@ const supabaseClient = typeof window.supabase !== 'undefined'
 const ROOM_PREFIX = 'setsot-';
 const TURN_TIME = 30; // seconds
 
+let joinRetryInterval = null;
+
+function clearJoinRetry() {
+  if (joinRetryInterval) {
+    clearInterval(joinRetryInterval);
+    joinRetryInterval = null;
+    console.log('Join retry interval cleared');
+  }
+}
+
 /* ============================================================
  *  3. HELPER FUNCTIONS
  * ============================================================ */
@@ -316,19 +326,27 @@ async function joinRoom() {
     MP.gameStarted = false;
     localStorage.setItem('setsot_active_room', code);
     
-    // Send join request via broadcast
+    // Send join request via broadcast with retry interval
     const profile = ProfileMgr.get();
-    MP.channel.send({
-      type: 'broadcast',
-      event: 'guest_msg',
-      payload: {
-        senderId: MP.myPeerId,
-        data: {
-          type: 'join',
-          profile: profile
-        }
+    const sendJoinMsg = () => {
+      if (MP.channel && !MP.gameStarted) {
+        console.log('Sending join request...');
+        MP.channel.send({
+          type: 'broadcast',
+          event: 'guest_msg',
+          payload: {
+            senderId: MP.myPeerId,
+            data: {
+              type: 'join',
+              profile: profile
+            }
+          }
+        });
       }
-    });
+    };
+    sendJoinMsg();
+    clearJoinRetry();
+    joinRetryInterval = setInterval(sendJoinMsg, 2000);
 
   } catch (err) {
     spinner.classList.add('hidden');
@@ -426,6 +444,7 @@ function initChannel(roomCode, isHost = false, preserveState = false) {
 }
 
 function destroyChannel(preserveState = false) {
+  clearJoinRetry();
   if (MP.channel) {
     try { supabaseClient.removeChannel(MP.channel); } catch(e){}
     MP.channel = null;
@@ -441,8 +460,33 @@ function destroyChannel(preserveState = false) {
 function handleHostData(senderId, data) {
   switch (data.type) {
     case 'join': {
-      const existingPlayerIdx = MP.players.findIndex(p => p.peerId === senderId);
-      const gPlayerIdx = G.players.findIndex(p => p.peerId === senderId);
+      let existingPlayerIdx = MP.players.findIndex(p => p.peerId === senderId);
+      let gPlayerIdx = G.players.findIndex(p => p.peerId === senderId);
+
+      // Fallback: If not found by peerId but game is started, check by profile name
+      if (MP.gameStarted && (existingPlayerIdx === -1 || gPlayerIdx === -1)) {
+        const nameMatchIdx = MP.players.findIndex(p => !p.connected && p.profile && p.profile.name === data.profile.name);
+        if (nameMatchIdx !== -1) {
+          console.log(`Matching rejoining player by name fallback: ${data.profile.name}. Updating peerId from ${MP.players[nameMatchIdx].peerId} to ${senderId}`);
+          const oldPeerId = MP.players[nameMatchIdx].peerId;
+          MP.players[nameMatchIdx].peerId = senderId;
+          existingPlayerIdx = nameMatchIdx;
+          
+          const gMatchIdx = G.players.findIndex(p => p.peerId === oldPeerId);
+          if (gMatchIdx !== -1) {
+            G.players[gMatchIdx].peerId = senderId;
+            gPlayerIdx = gMatchIdx;
+          }
+          
+          // Clear old kick timers and hide vote overlays
+          if (MP.kickTimers && MP.kickTimers[oldPeerId]) {
+            clearTimeout(MP.kickTimers[oldPeerId]);
+            delete MP.kickTimers[oldPeerId];
+          }
+          hideVoteOverlay(oldPeerId);
+        }
+      }
+
       const isKicked = (gPlayerIdx !== -1 && G.players[gPlayerIdx].isKicked);
 
       if (MP.gameStarted && existingPlayerIdx !== -1 && gPlayerIdx !== -1 && !isKicked) {
@@ -682,6 +726,7 @@ function handleGuestData(data) {
     }
 
     case 'lobby_state': {
+      clearJoinRetry();
       $mp('join-spinner')?.classList.add('hidden');
       const joinBtn = $mp('btn-join-go');
       if (joinBtn) joinBtn.disabled = false;
@@ -794,6 +839,7 @@ function handleGuestData(data) {
       break;
 
     case 'game_state_update': {
+      clearJoinRetry();
       applyGameStateUpdate(data);
       break;
     }
@@ -1169,6 +1215,7 @@ function hostStartGame(isRestart = false) {
     G.players[i].profile = mp.profile;
     G.players[i].isBot = false;
   }
+  G.myIndex = G.players.findIndex(p => p.peerId === MP.myPeerId);
 
   // Build the game start payload for guests
   for (let i = 0; i < numPlayers; i++) {
@@ -1459,21 +1506,34 @@ function applyGameStateUpdate(data) {
     G.numPlayers = data.players.length;
   }
 
-  // Safely initialize G.players if it doesn't exist or is empty
-  if ((!G.players || G.players.length === 0) && data.players) {
-    G.players = data.players.map((pd, idx) => ({
-      name: pd.name,
-      hand: (idx === data.myIndex) ? (data.myHand || []) : [],
-      isHuman: (idx === data.myIndex),
-      avatar: pd.avatar,
-      profile: pd.profile,
-      peerId: pd.peerId,
-      handCount: pd.handCount,
-      isBot: pd.isBot,
-      replacedByBot: pd.replacedByBot,
-      isKicked: pd.isKicked
-    }));
-    G.myIndex = data.myIndex;
+  // Safely initialize or sync G.players
+  if (data.players) {
+    if (!G.players || G.players.length === 0 || G.players.length !== data.players.length) {
+      G.players = data.players.map((pd, idx) => ({
+        name: pd.name,
+        hand: (idx === data.myIndex) ? (data.myHand || []) : [],
+        isHuman: (idx === data.myIndex),
+        avatar: pd.avatar,
+        profile: pd.profile,
+        peerId: pd.peerId,
+        handCount: pd.handCount,
+        isBot: pd.isBot,
+        replacedByBot: pd.replacedByBot,
+        isKicked: pd.isKicked
+      }));
+      G.myIndex = data.myIndex;
+    } else {
+      for (let i = 0; i < data.players.length && i < G.players.length; i++) {
+        G.players[i].handCount = data.players[i].handCount;
+        G.players[i].name = data.players[i].name;
+        G.players[i].isKicked = data.players[i].isKicked;
+        G.players[i].isBot = data.players[i].isBot;
+        G.players[i].replacedByBot = data.players[i].replacedByBot;
+        G.players[i].peerId = data.players[i].peerId;
+        G.players[i].profile = data.players[i].profile;
+        G.players[i].avatar = data.players[i].avatar;
+      }
+    }
   }
 
   // Safely initialize MP.players if it doesn't exist or is empty
@@ -1496,15 +1556,6 @@ function applyGameStateUpdate(data) {
     showScreen('game-screen');
     const badge = $mp('ingame-chat-toggle');
     if (badge) badge.classList.remove('hidden');
-  }
-
-  // Update player hand counts and sync hands for all players
-  for (let i = 0; i < data.players.length && i < G.players.length; i++) {
-    G.players[i].handCount = data.players[i].handCount;
-    G.players[i].name = data.players[i].name;
-    G.players[i].isKicked = data.players[i].isKicked;
-    G.players[i].isBot = data.players[i].isBot;
-    G.players[i].replacedByBot = data.players[i].replacedByBot;
   }
 
   // Update own hand if provided, preserving local drag-and-drop order
@@ -2012,26 +2063,84 @@ async function autoRejoinRoom(code) {
   try {
     showDisconnectOverlay();
     
-    await initChannel(code, false);
-    MP.isHost = false;
+    const wasHost = MP.isHost;
+    await initChannel(code, wasHost);
+    MP.isHost = wasHost;
     MP.isMultiplayer = true;
     MP.roomCode = code;
-    MP.gameStarted = false;
+    
+    if (!wasHost) {
+      MP.gameStarted = false;
+    }
     
     $mp('disconnect-overlay')?.classList.add('hidden');
     
     const profile = ProfileMgr.get();
-    MP.channel.send({
-      type: 'broadcast',
-      event: 'guest_msg',
-      payload: {
-        senderId: MP.myPeerId,
-        data: {
-          type: 'join',
-          profile: profile
+    if (wasHost) {
+      // If we are host, broadcast our state to guest players to keep them synchronized
+      broadcastFromHost({
+        type: 'lobby_state',
+        players: MP.players,
+        settings: MP.settings,
+        roomCode: MP.roomCode,
+        gameInProgress: MP.gameStarted
+      });
+      // Also broadcast active game state if game was in progress
+      if (MP.gameStarted && G.players && G.players.length > 0) {
+        for (const p of MP.players) {
+          if (p.peerId === MP.myPeerId || !p.connected) continue;
+          const gIdx = G.players.findIndex(x => x.peerId === p.peerId);
+          if (gIdx !== -1) {
+            sendToPlayer(p.peerId, {
+              type: 'game_state_update',
+              hostPeerId: MP.myPeerId,
+              chatMessages: MP.chatMessages,
+              currentIdx: G.currentIdx,
+              roundLeaderIdx: G.roundLeaderIdx,
+              currentPattern: G.currentPattern,
+              tableCards: G.tableCards,
+              roundNum: G.roundNum,
+              gameOver: G.gameOver,
+              winners: G.winners || [],
+              passedPlayers: [...G.passedPlayers],
+              players: G.players.map(pl => ({
+                name: pl.name,
+                handCount: pl.hand.length,
+                avatar: pl.avatar,
+                profile: pl.profile,
+                peerId: pl.peerId,
+                isKicked: pl.isKicked,
+                isBot: pl.isBot,
+                replacedByBot: pl.replacedByBot
+              })),
+              logs: G.logs.slice(-8),
+              myHand: G.players[gIdx].hand,
+              myIndex: gIdx
+            });
+          }
         }
       }
-    });
+    } else {
+      const sendJoinMsg = () => {
+        if (MP.channel && !MP.gameStarted) {
+          console.log('Sending rejoin request...');
+          MP.channel.send({
+            type: 'broadcast',
+            event: 'guest_msg',
+            payload: {
+              senderId: MP.myPeerId,
+              data: {
+                type: 'join',
+                profile: profile
+              }
+            }
+          });
+        }
+      };
+      sendJoinMsg();
+      clearJoinRetry();
+      joinRetryInterval = setInterval(sendJoinMsg, 2000);
+    }
   } catch (err) {
     console.error('Auto rejoin failed:', err);
     $mp('disconnect-overlay')?.classList.add('hidden');
@@ -2138,8 +2247,14 @@ function handleHostDisconnect(peerId) {
       el.remove();
     });
     
-    // Choose new host: the first active connected player
-    const nextHost = MP.players.find(p => p.connected);
+    // Choose new host: the first active connected player who is also in the game (if game started)
+    let nextHost = null;
+    if (MP.gameStarted && G.players && G.players.length > 0) {
+      nextHost = MP.players.find(p => p.connected && G.players.some(gp => gp.peerId === p.peerId));
+    }
+    if (!nextHost) {
+      nextHost = MP.players.find(p => p.connected);
+    }
     if (nextHost) {
       nextHost.isHost = true;
       addChatMessage('system', `${nextHost.profile.name} sekarang menjadi Host baru!`);
