@@ -205,7 +205,7 @@ function canBeat(np, ep) {
     case 'DOUBLE_TRIPLE': return np.highValue > ep.highValue;
     case 'DOUBLE_STRAIGHT': return np.length === ep.length && np.highValue > ep.highValue;
     case 'STRAIGHT': return np.length === ep.length && np.highValue > ep.highValue;
-    case 'KAWAL':    return np.tripleValue > ep.tripleValue && np.pairValue > ep.pairValue;
+    case 'KAWAL':    return np.tripleValue > ep.tripleValue || (np.tripleValue === ep.tripleValue && np.pairValue > ep.pairValue);
     default:         return false;
   }
 }

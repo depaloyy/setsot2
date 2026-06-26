@@ -56,6 +56,7 @@ const MP = {
   turnTimerValue: 30,
   chatMessages: [],
   unreadChat: 0,
+  kickTimers: {},
 };
 
 const SUPABASE_URL = 'https://uciohbcjtranikvcufhh.supabase.co';
@@ -440,10 +441,18 @@ function destroyChannel(preserveState = false) {
 function handleHostData(senderId, data) {
   switch (data.type) {
     case 'join': {
-      // Check if this player is rejoining an active game
       const existingPlayerIdx = MP.players.findIndex(p => p.peerId === senderId);
-      if (MP.gameStarted && existingPlayerIdx !== -1) {
-        // Rejoining player!
+      const gPlayerIdx = G.players.findIndex(p => p.peerId === senderId);
+      const isKicked = (gPlayerIdx !== -1 && G.players[gPlayerIdx].isKicked);
+
+      if (MP.gameStarted && existingPlayerIdx !== -1 && gPlayerIdx !== -1 && !isKicked) {
+        // Clear kick timer if any
+        if (MP.kickTimers && MP.kickTimers[senderId]) {
+          clearTimeout(MP.kickTimers[senderId]);
+          delete MP.kickTimers[senderId];
+        }
+
+        // Rejoining active player (not kicked)
         MP.players[existingPlayerIdx].connected = true;
         
         // If they were the host but we are now the host, demote them to guest
@@ -451,8 +460,6 @@ function handleHostData(senderId, data) {
           MP.players[existingPlayerIdx].isHost = false;
         }
         
-        // Find corresponding G.player
-        const gPlayerIdx = G.players.findIndex(p => p.peerId === senderId);
         if (gPlayerIdx !== -1) {
           G.players[gPlayerIdx].isBot = false; // Stop bot play
           G.players[gPlayerIdx].replacedByBot = false;
@@ -461,7 +468,6 @@ function handleHostData(senderId, data) {
         addChatMessage('system', `${data.profile.name} terhubung kembali!`);
         hideVoteOverlay(senderId);
         
-        // Notify others
         broadcastFromHost({
           type: 'player_reconnected',
           peerId: senderId,
@@ -493,12 +499,10 @@ function handleHostData(senderId, data) {
           })),
           logs: G.logs.slice(-8),
           myHand: G.players[gPlayerIdx].hand,
-          allHands: G.players.map(p => p.hand),
           myIndex: gPlayerIdx
         };
         sendToPlayer(senderId, personalState);
         
-        // If it is currently their turn, trigger 'your_turn' to wake them up
         if (G.currentIdx === gPlayerIdx && !G.gameOver) {
           sendToPlayer(senderId, {
             type: 'your_turn',
@@ -514,22 +518,24 @@ function handleHostData(senderId, data) {
         return;
       }
 
-      const activePlayers = MP.players.filter(p => p.connected);
-      if (activePlayers.length >= MP.settings.maxPlayers) {
-        sendToPlayer(senderId, { type: 'error', message: 'Room penuh' });
-        return;
-      }
-      
-      // If game has started, add them as a waiting player in the lobby
-      if (MP.gameStarted) {
-        const playerInfo = {
+      // If they were kicked or are a new player joining mid-game
+      if (existingPlayerIdx !== -1) {
+        MP.players[existingPlayerIdx].connected = true;
+      } else {
+        const activePlayers = MP.players.filter(p => p.connected);
+        if (activePlayers.length >= MP.settings.maxPlayers) {
+          sendToPlayer(senderId, { type: 'error', message: 'Room penuh' });
+          return;
+        }
+        MP.players.push({
           peerId: senderId,
           profile: data.profile,
           isHost: false,
           connected: true
-        };
-        MP.players.push(playerInfo);
-        
+        });
+      }
+
+      if (MP.gameStarted) {
         sendToPlayer(senderId, {
           type: 'lobby_state',
           players: MP.players.map(p => ({
@@ -542,24 +548,20 @@ function handleHostData(senderId, data) {
           roomCode: MP.roomCode,
           gameInProgress: true
         });
-        
-        addChatMessage('system', `${data.profile.name} bergabung (Menunggu game selesai)`);
-        
+
+        if (isKicked) {
+          addChatMessage('system', `${data.profile.name} (kicked) terhubung kembali ke lobby (menunggu game selesai)`);
+        } else {
+          addChatMessage('system', `${data.profile.name} bergabung (Menunggu game selesai)`);
+        }
+
         broadcastFromHost({
           type: 'player_joined',
-          player: playerInfo,
+          player: MP.players.find(p => p.peerId === senderId),
           players: MP.players
         });
         return;
       }
-
-      const playerInfo = {
-        peerId: senderId,
-        profile: data.profile,
-        isHost: false,
-        connected: true
-      };
-      MP.players.push(playerInfo);
 
       sendToPlayer(senderId, {
         type: 'lobby_state',
@@ -575,7 +577,7 @@ function handleHostData(senderId, data) {
 
       broadcastFromHost({
         type: 'player_joined',
-        player: playerInfo,
+        player: MP.players.find(p => p.peerId === senderId),
         players: MP.players
       });
 
@@ -635,10 +637,22 @@ function handlePlayerDisconnect(peerId) {
   } else {
     MP.players[idx].connected = false;
     addChatMessage('system', `${MP.players[idx].profile.name} terputus (Menunggu voting...)`);
+    
+    // Setup auto-kick countdown on host
+    if (MP.isHost) {
+      MP.kickTimers = MP.kickTimers || {};
+      if (MP.kickTimers[peerId]) clearTimeout(MP.kickTimers[peerId]);
+      MP.kickTimers[peerId] = setTimeout(() => {
+        console.log(`Auto-kick timeout fired for ${peerId}`);
+        executeVoteAction(peerId, 'kick');
+      }, 30000);
+    }
+
     broadcastFromHost({
       type: 'player_disconnected',
       peerId,
-      playerName: MP.players[idx].profile.name
+      playerName: MP.players[idx].profile.name,
+      countdown: 30
     });
     if (typeof renderOpponents === 'function') renderOpponents();
 
@@ -647,7 +661,7 @@ function handlePlayerDisconnect(peerId) {
     MP.votes[peerId] = { bot: new Set(), kick: new Set(), wait: new Set() };
     
     // Show voting UI locally for the host (if host is still in the game)
-    showVoteOverlay(peerId, MP.players[idx].profile.name);
+    showVoteOverlay(peerId, MP.players[idx].profile.name, 30);
   }
 }
 
@@ -699,7 +713,7 @@ function handleGuestData(data) {
       const p = MP.players.find(x => x.peerId === data.peerId);
       if (p) p.connected = false;
       if (typeof renderOpponents === 'function') renderOpponents();
-      showVoteOverlay(data.peerId, data.playerName);
+      showVoteOverlay(data.peerId, data.playerName, data.countdown);
       break;
     }
 
@@ -1120,7 +1134,12 @@ function initIngameChatUI() {
 function hostStartGame(isRestart = false) {
   $mp('gameover-overlay')?.classList.add('hidden');
   $mp('human-win-overlay')?.classList.add('hidden');
-  document.querySelectorAll('[id^="vote-overlay-"]').forEach(el => el.remove());
+  document.querySelectorAll('[id^="vote-overlay-"]').forEach(el => {
+    if (el._timerInterval) {
+      clearInterval(el._timerInterval);
+    }
+    el.remove();
+  });
 
   MP.gameStarted = true;
   localStorage.setItem('setsot_active_room', MP.roomCode);
@@ -1349,7 +1368,6 @@ function broadcastGameState() {
       isBot: p.isBot,
       replacedByBot: p.replacedByBot
     })),
-    allHands: G.players.map(p => p.hand),
     logs: G.logs.slice(-8)
   };
 
@@ -1370,6 +1388,8 @@ function broadcastGameState() {
  *  15. GUEST — HANDLE TURNS
  * ============================================================ */
 function handleYourTurn(data) {
+  if (G.myIndex === undefined) return;
+  if (G.players[G.myIndex] && G.players[G.myIndex].isKicked) return;
   // Update my hand, preserving local drag-and-drop order
   G.players[G.myIndex].hand = mergeHandPreservingOrder(G.players[G.myIndex].hand, data.hand);
   G.currentPattern = data.currentPattern;
@@ -1390,6 +1410,7 @@ function handleYourTurn(data) {
 
 function handleTurnInfo(data) {
   if (G.myIndex === undefined) return; // waiting player
+  if (G.players[G.myIndex] && G.players[G.myIndex].isKicked) return; // kicked player
   G.currentIdx = data.currentIdx;
   G.busy = true;
   if (G.players && G.players.length > 0) {
@@ -1408,6 +1429,19 @@ function applyGameStateUpdate(data) {
         connected: true
       }));
     }
+    return;
+  }
+
+  const myPlayerObj = data.players[data.myIndex];
+  if (myPlayerObj && myPlayerObj.isKicked) {
+    // If I was kicked, I should stay in the lobby as a waiting player
+    showScreen('lobby-screen');
+    const waitMsg = $mp('lobby-wait-msg');
+    if (waitMsg) {
+      waitMsg.textContent = 'Kamu di-kick dari permainan ini. Harap tunggu hingga game selesai...';
+      waitMsg.classList.remove('hidden');
+    }
+    $mp('btn-lobby-start')?.classList.add('hidden');
     return;
   }
 
@@ -1471,14 +1505,6 @@ function applyGameStateUpdate(data) {
     G.players[i].isKicked = data.players[i].isKicked;
     G.players[i].isBot = data.players[i].isBot;
     G.players[i].replacedByBot = data.players[i].replacedByBot;
-  }
-
-  if (data.allHands) {
-    for (let i = 0; i < G.players.length; i++) {
-      if (i !== G.myIndex && data.allHands[i]) {
-        G.players[i].hand = data.allHands[i];
-      }
-    }
   }
 
   // Update own hand if provided, preserving local drag-and-drop order
@@ -1593,6 +1619,12 @@ function handleMultiplayerGameOver(data) {
   G.gameOver = true;
   localStorage.removeItem('setsot_active_room');
   clearTurnTimer();
+  document.querySelectorAll('[id^="vote-overlay-"]').forEach(el => {
+    if (el._timerInterval) {
+      clearInterval(el._timerInterval);
+    }
+    el.remove();
+  });
   showGameOver();
 }
 
@@ -1602,7 +1634,12 @@ function handleMultiplayerGameOver(data) {
 function showDisconnectOverlay() {
   $mp('gameover-overlay')?.classList.add('hidden');
   $mp('human-win-overlay')?.classList.add('hidden');
-  document.querySelectorAll('[id^="vote-overlay-"]').forEach(el => el.remove());
+  document.querySelectorAll('[id^="vote-overlay-"]').forEach(el => {
+    if (el._timerInterval) {
+      clearInterval(el._timerInterval);
+    }
+    el.remove();
+  });
   $mp('disconnect-overlay')?.classList.remove('hidden');
 }
 
@@ -1751,7 +1788,7 @@ document.addEventListener('DOMContentLoaded', () => {
 /* ============================================================
  *  22. VOTING & RECONNECT SYSTEM
  * ============================================================ */
-function showVoteOverlay(peerId, playerName) {
+function showVoteOverlay(peerId, playerName, countdown) {
   if (peerId === MP.myPeerId) return; // Do not show voting popup to the player who left/disconnected
   if (!MP.gameStarted || G.gameOver) return; // Do not show voting overlay in lobby or after game is over
   if (document.getElementById('vote-overlay-' + peerId)) return;
@@ -1761,6 +1798,11 @@ function showVoteOverlay(peerId, playerName) {
   div.className = 'overlay';
   div.style.zIndex = '140';
 
+  let countdownHtml = '';
+  if (countdown) {
+    countdownHtml = `<div class="vote-countdown" style="font-size: 13px; font-weight: 600; color: #FF3B30; margin-bottom: 12px; text-align: center;">Auto-kick dalam ${countdown} detik...</div>`;
+  }
+
   div.innerHTML = `
     <div class="overlay-card" style="padding: 24px;">
       <div class="overlay-icon" style="font-size: 40px; margin-bottom: 8px;">🗳️</div>
@@ -1768,6 +1810,7 @@ function showVoteOverlay(peerId, playerName) {
       <p style="font-size: 14px; margin-bottom: 16px; color: #636366;">
         <strong>${playerName}</strong> terputus. Pilih tindakan untuk melanjutkan permainan:
       </p>
+      ${countdownHtml}
       <div style="display: flex; flex-direction: column; gap: 8px;">
         <button class="btn-primary vote-btn-bot" style="height: 40px; font-size: 14px;">🤖 Gantikan dengan Bot</button>
         <button class="btn-danger vote-btn-kick" style="height: 40px; font-size: 14px;">❌ Kick Pemain</button>
@@ -1780,12 +1823,32 @@ function showVoteOverlay(peerId, playerName) {
   div.querySelector('.vote-btn-kick').addEventListener('click', () => submitVote(peerId, 'kick'));
   div.querySelector('.vote-btn-wait').addEventListener('click', () => submitVote(peerId, 'wait'));
 
+  if (countdown) {
+    let timeLeft = countdown;
+    const timerEl = div.querySelector('.vote-countdown');
+    const intervalId = setInterval(() => {
+      timeLeft--;
+      if (timeLeft <= 0) {
+        clearInterval(intervalId);
+        if (timerEl) timerEl.textContent = 'Auto-kick memproses...';
+      } else {
+        if (timerEl) timerEl.textContent = `Auto-kick dalam ${timeLeft} detik...`;
+      }
+    }, 1000);
+    div._timerInterval = intervalId;
+  }
+
   document.body.appendChild(div);
 }
 
 function hideVoteOverlay(peerId) {
   const el = document.getElementById('vote-overlay-' + peerId);
-  if (el) el.remove();
+  if (el) {
+    if (el._timerInterval) {
+      clearInterval(el._timerInterval);
+    }
+    el.remove();
+  }
 }
 
 function submitVote(peerId, voteType) {
@@ -1881,6 +1944,11 @@ function handleVoteCast(voterPeerId, targetPeerId, voteType) {
 function executeVoteAction(targetPeerId, actionType) {
   if (!MP.isHost) return;
   
+  if (MP.kickTimers && MP.kickTimers[targetPeerId]) {
+    clearTimeout(MP.kickTimers[targetPeerId]);
+    delete MP.kickTimers[targetPeerId];
+  }
+
   if (MP.votes) delete MP.votes[targetPeerId];
 
   broadcastFromHost({
@@ -2063,7 +2131,12 @@ function handleHostDisconnect(peerId) {
     hostPlayer.isHost = false; // They are no longer host
     
     // Clear existing vote overlays since host is changing and votes are reset
-    document.querySelectorAll('[id^="vote-overlay-"]').forEach(el => el.remove());
+    document.querySelectorAll('[id^="vote-overlay-"]').forEach(el => {
+      if (el._timerInterval) {
+        clearInterval(el._timerInterval);
+      }
+      el.remove();
+    });
     
     // Choose new host: the first active connected player
     const nextHost = MP.players.find(p => p.connected);
@@ -2133,7 +2206,12 @@ function showHostDisconnectOverlay() {
   $mp('disconnect-overlay')?.classList.add('hidden');
   $mp('gameover-overlay')?.classList.add('hidden');
   $mp('human-win-overlay')?.classList.add('hidden');
-  document.querySelectorAll('[id^="vote-overlay-"]').forEach(el => el.remove());
+  document.querySelectorAll('[id^="vote-overlay-"]').forEach(el => {
+    if (el._timerInterval) {
+      clearInterval(el._timerInterval);
+    }
+    el.remove();
+  });
 
   const div = document.createElement('div');
   div.id = 'host-disconnect-overlay';

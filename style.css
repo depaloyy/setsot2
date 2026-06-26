@@ -913,6 +913,12 @@ body{
 .ingame-chat-log .chat-msg{color:#AEAEB2}
 .ingame-chat-log .chat-msg strong{color:#F2F2F7}
 
+.ingame-chat-panel .lobby-chat-input-wrap {
+  padding: 10px 14px;
+  background: rgba(0, 0, 0, 0.2);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
 /* --- Player Section --- */
 .player-section{
   position:relative;
