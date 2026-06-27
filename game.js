@@ -248,6 +248,7 @@ function initGame() {
   G.selectedIds   = new Set();
   G.logs          = [];
   G.busy          = false;
+  G.roundTransition = false;
   
   if (aiTimeoutId) {
     clearTimeout(aiTimeoutId);
@@ -782,6 +783,7 @@ function checkGameOver() {
 }
 
 function executePlay(playerIdx, cards) {
+  G.busy = true; // Lock immediately to prevent double-play
   const player  = G.players[playerIdx];
   const pattern = detectPattern(cards);
 
@@ -811,6 +813,7 @@ function executePlay(playerIdx, cards) {
 
     const isMP = typeof MP !== 'undefined' && MP.isMultiplayer;
     const myIdx = isMP ? G.myIndex : 0;
+    // Show mid-game win overlay if human finished but game isn't over yet
     if (playerIdx === myIdx && !isMP) {
        showHumanWinOverlay(G.winners.indexOf(myIdx) + 1);
     }
@@ -834,6 +837,7 @@ function executePlay(playerIdx, cards) {
 }
 
 function executePass(playerIdx) {
+  G.busy = true; // Lock immediately to prevent spam-clicks
   G.passedPlayers.add(playerIdx);
   playSound('pass');
   addLog(`<strong>${G.players[playerIdx].name}</strong> pass`);
@@ -862,7 +866,8 @@ function getPlayerHandCount(idx) {
 function isRoundOver() {
   for (let i = 0; i < G.numPlayers; i++) {
     if (i === G.roundLeaderIdx) continue;
-    if (getPlayerHandCount(i) === 0) continue;  // already out
+    if (getPlayerHandCount(i) === 0) continue;  // already finished/out
+    if (G.players[i] && G.players[i].isKicked) continue; // kicked players don't count
     if (!G.passedPlayers.has(i)) return false;   // someone still active
   }
   return true;
@@ -875,12 +880,14 @@ function advanceAndContinue(fromIdx) {
     
     if (idx === G.roundLeaderIdx) {
       // circled back → round over
+      G.busy = true; // lock during transition window
       renderGame();
       setTimeout(() => startNewRound(G.roundLeaderIdx), 900);
       return;
     }
     
     if (getPlayerHandCount(idx) === 0) continue; // skip finished players
+    if (G.players[idx] && G.players[idx].isKicked) continue; // skip kicked players
     
     if (!G.passedPlayers.has(idx)) {
       G.currentIdx = idx;
@@ -890,12 +897,15 @@ function advanceAndContinue(fromIdx) {
     }
   }
   // safety: nobody found → end round
+  G.busy = true; // lock during transition window
   renderGame();
   setTimeout(() => startNewRound(G.roundLeaderIdx), 900);
 }
 
 function startNewRound(leaderIdx) {
   if (G.gameOver) return;             // don't start new round if game ended
+  if (G.roundTransition) return;      // re-entrancy guard: prevent double-increment from spam
+  G.roundTransition = true;
   
   let actualLeader = leaderIdx;
   if (getPlayerHandCount(actualLeader) === 0) {
@@ -915,6 +925,7 @@ function startNewRound(leaderIdx) {
   G.currentIdx     = actualLeader;
   G.roundLeaderIdx = actualLeader;
   G.selectedIds.clear();
+  G.roundTransition = false; // clear guard after state is set
 
   addLog(`— Putaran ${G.roundNum}: ${G.players[actualLeader].name} memulai —`);
   renderGame();
@@ -1012,12 +1023,14 @@ function renderOpponents() {
     const mpPlayer = isMP ? MP.players.find(x => x.peerId === p.peerId) : null;
     const isDisconnected = mpPlayer && !mpPlayer.connected;
     
+    const isKicked = p.isKicked === true;
     const div = document.createElement('div');
     div.className = 'opp-card'
-      + (G.currentIdx === i && !G.gameOver && !isWinner ? ' active-turn' : '')
+      + (G.currentIdx === i && !G.gameOver && !isWinner && !isKicked ? ' active-turn' : '')
       + (G.passedPlayers.has(i) ? ' passed' : '')
       + (isWinner ? ' winner' : '')
-      + (isDisconnected ? ' disconnected' : '');
+      + (isDisconnected ? ' disconnected' : '')
+      + (isKicked ? ' kicked' : '');
       
     const isMe = (i === myIdx);
     let avatar, name, avatarStyle = '';
@@ -1025,8 +1038,11 @@ function renderOpponents() {
     if (isMP && p.profile) {
       avatar = p.profile.symbol;
       name = isMe ? `${p.name} (Kamu)` : p.name;
-      if (isDisconnected) {
+      if (isDisconnected && !isKicked) {
         name = `${p.name} (Bot)`;
+      }
+      if (isKicked) {
+        name = `${p.name} (Kicked)`;
       }
       const c = p.profile.color;
       avatarStyle = `background:${hexToRGBA(c,0.2)};color:${c};`;
@@ -1041,6 +1057,9 @@ function renderOpponents() {
     let countHtml = `<span class="opp-count">${cardCount} kartu</span>`;
     if (isWinner) {
        countHtml = `<span class="opp-count" style="color:#30D158; font-weight:bold;">Juara ${winRank + 1}</span>`;
+    }
+    if (isKicked) {
+       countHtml = `<span class="opp-count" style="color:#FF3B30; font-weight:bold;">❌ Dikeluarkan</span>`;
     }
 
     div.innerHTML = `
@@ -1244,11 +1263,9 @@ function updateButtons() {
   const isMP = typeof MP !== 'undefined' && MP.isMultiplayer;
   const myIdx = isMP ? G.myIndex : 0;
   
-  btnSkip.style.display = 'none';
+  // Default state: show play/pass, hide skip
   btnSkip.classList.add('hidden');
-  btnPlay.style.display = 'block';
   btnPlay.classList.remove('hidden');
-  btnPass.style.display = 'block';
   btnPass.classList.remove('hidden');
 
   if (G.gameOver) {
@@ -1257,15 +1274,14 @@ function updateButtons() {
   
   const myHand = G.players[myIdx]?.hand;
   if (myHand && myHand.length === 0) {
-    // human finished
+    // human finished their cards
     if (!isMP) {
-      btnPlay.style.display = 'none';
+      // Solo: show skip button
       btnPlay.classList.add('hidden');
-      btnPass.style.display = 'none';
       btnPass.classList.add('hidden');
-      btnSkip.style.display = 'block';
       btnSkip.classList.remove('hidden');
     } else {
+      // Multiplayer: disable but keep visible (spectating)
       btnPlay.disabled = true;
       btnPass.disabled = true;
     }
@@ -1351,10 +1367,9 @@ function playerPlay() {
       showToast('Kartu tidak cukup kuat untuk menimpa'); return;
     }
   } else {
-    // Opening a round — any valid pattern is OK, but not a bomb as opener
-    // Actually, bombs can only react — check if it's a bomb type when opening
+    // Opening a round — bombs cannot be used as openers
     if (pattern.type === 'BOMB' || pattern.type === 'BLACK_JOKER_BOMB' || pattern.type === 'RED_JOKER_BOMB') {
-      showToast('Bom hanya bisa digunakan untuk melawan Joker atau Bom lain');
+      showToast('💣 Bom hanya bisa dimainkan untuk melawan Joker atau Bom!');
       return;
     }
   }
@@ -1721,6 +1736,7 @@ function setupListeners() {
     if (G.winners && G.winners.length > 0) {
       G.previousWinnerIdx = G.winners[0];
     }
+    const isFirstGame = G.isFirstGame; // capture before initGame resets it
     G.isFirstGame = false;
     
     // Clear the board visually before dealing
@@ -1736,8 +1752,8 @@ function setupListeners() {
     await showDealAnimation();
     renderGame();
     
-    // Only do 3-dump on first game; next games start with previous winner
-    if (G.isFirstGame) {
+    // Only do 3-dump on first game; subsequent games start with previous winner
+    if (isFirstGame) {
       await performThreeDump();
     }
     scheduleTurn();

@@ -1736,23 +1736,24 @@ function multiplayerPlayerPlay() {
     }
   } else {
     if (pattern.type === 'BOMB' || pattern.type === 'BLACK_JOKER_BOMB' || pattern.type === 'RED_JOKER_BOMB') {
-      showToast('Bom hanya bisa digunakan untuk melawan Joker atau Bom lain');
+      showToast('💣 Bom hanya bisa dimainkan untuk melawan Joker atau Bom!');
       return;
     }
   }
 
+  // Lock immediately after validation — prevents double-tap
+  G.busy = true;
   clearTurnTimer();
   G.selectedIds.clear();
 
   if (MP.isHost) {
-    executePlay(myIdx, sel);
+    executePlay(myIdx, sel); // executePlay will manage G.busy internally
   } else {
     // Send to host
     sendActionToHost({
       action: 'play',
       cardIds: sel.map(c => c.id)
     });
-    G.busy = true;
     renderGame();
   }
 }
@@ -1767,14 +1768,15 @@ function multiplayerPlayerPass() {
   if (G.currentIdx !== myIdx) return;
   if (!G.currentPattern) { showToast('Kamu harus memainkan kartu untuk memulai'); return; }
 
+  // Lock immediately after validation — prevents double-tap
+  G.busy = true;
   clearTurnTimer();
   G.selectedIds.clear();
 
   if (MP.isHost) {
-    executePass(myIdx);
+    executePass(myIdx); // executePass will manage G.busy internally
   } else {
     sendActionToHost({ action: 'pass' });
-    G.busy = true;
     renderGame();
   }
 }
@@ -2070,7 +2072,11 @@ async function autoRejoinRoom(code) {
     MP.roomCode = code;
     
     if (!wasHost) {
-      MP.gameStarted = false;
+      // Keep MP.gameStarted as-is for mid-game reconnects;
+      // only reset it if we were never in a game (fresh join scenario)
+      if (!MP.gameStarted) {
+        MP.gameStarted = false;
+      }
     }
     
     $mp('disconnect-overlay')?.classList.add('hidden');
@@ -2122,7 +2128,7 @@ async function autoRejoinRoom(code) {
       }
     } else {
       const sendJoinMsg = () => {
-        if (MP.channel && !MP.gameStarted) {
+        if (MP.channel) {
           console.log('Sending rejoin request...');
           MP.channel.send({
             type: 'broadcast',

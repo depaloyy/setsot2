@@ -727,8 +727,9 @@ body{
   background:#2C3E50;
 }
 .opp-card.passed{opacity:0.35}
-.opp-card.winner{outline-color:#34C759}
+.opp-card.winner{outline-color:#34C759;background:#1A3A20}
 .opp-card.disconnected{opacity:0.3;border:1px dashed #636366}
+.opp-card.kicked{opacity:0.2;filter:grayscale(1)}
 .opp-avatar{
   width:34px;height:34px;border-radius:50%;
   background:#48484A;
@@ -969,6 +970,17 @@ body{
   box-shadow:0 2px 8px rgba(0,122,255,0.25);
 }
 .btn-play:hover:not(:disabled){box-shadow:0 4px 14px rgba(0,122,255,0.35)}
+
+/* Skip button (Lewati & Mulai Baru) — red danger style */
+#btn-skip{
+  background:#E5342E;
+  color:#fff;
+  box-shadow:0 2px 8px rgba(229,52,46,0.30);
+}
+#btn-skip:hover:not(:disabled){
+  background:#c9261f;
+  box-shadow:0 4px 14px rgba(229,52,46,0.45);
+}
 
 /* ============================================================
  *  PLAYING CARDS
