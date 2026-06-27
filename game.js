@@ -962,6 +962,7 @@ function scheduleTurn() {
   } else {
     G.busy = false;
     G.selectedIds.clear(); // fresh selection each turn
+    renderPlayerHand(); // re-render hand NOW with G.busy=false so click listeners are attached
     updateButtons();
     
     // Play "Your Turn" animation
