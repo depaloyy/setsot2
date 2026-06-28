@@ -303,15 +303,19 @@
     </div>
 
     <!-- Player hand -->
-    <section class="player-section">
+    <section class="player-section" id="player-section">
       <div class="hand-info">
         <span id="hand-count">13 kartu</span>
+        <button id="btn-sort" class="btn-sort" title="Urutkan kartu">↕ Urutkan</button>
       </div>
       <div class="player-hand" id="player-hand"></div>
-      <div class="action-bar">
-        <button id="btn-pass" class="btn-action btn-pass" disabled>Pass</button>
-        <button id="btn-play" class="btn-action btn-play" disabled>Mainkan</button>
-        <button id="btn-skip" class="btn-action hidden">Lewati &amp; Mulai Baru</button>
+      <div class="action-bar-wrap">
+        <div id="pattern-preview" class="pattern-preview"></div>
+        <div class="action-bar">
+          <button id="btn-pass" class="btn-action btn-pass" disabled>Pass</button>
+          <button id="btn-play" class="btn-action btn-play" disabled>Mainkan</button>
+          <button id="btn-skip" class="btn-action hidden">Lewati &amp; Mulai Baru</button>
+        </div>
       </div>
     </section>
   </div>

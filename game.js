@@ -221,11 +221,10 @@ const G = {
   roundLeaderIdx : 0,      // who played last valid pattern
   currentPattern : null,   // pattern on the table
   tableCards     : [],     // cards currently on the table
-  passedPlayers  : null,   // Set<int>
+  passedPlayers  : new Set(),   // Set<int>
   roundNum       : 1,
   gameOver       : false,
-  winner         : -1,
-  selectedIds    : null,   // Set<int> (human card selection)
+  selectedIds    : new Set(),   // Set<int> (human card selection)
   logs           : [],     // string[]
   busy           : false,  // prevents double-clicks while AI plays
   difficulty     : 'normal', // easy | normal | hard
@@ -669,7 +668,7 @@ function aiResponsePlay(hand, ep) {
     const kw = findAllKawals(hand);
     for (const k of kw) {
       const kp = detectPattern(k);
-      if (kp && kp.tripleValue > ep.tripleValue && kp.pairValue > ep.pairValue)
+      if (kp && canBeat(kp, ep))
         validPlays.push(k);
     }
   }
@@ -899,7 +898,10 @@ function advanceAndContinue(fromIdx) {
   // safety: nobody found → end round
   G.busy = true; // lock during transition window
   renderGame();
-  setTimeout(() => startNewRound(G.roundLeaderIdx), 900);
+  // Try to end game first, then start new round if not over
+  if (!checkGameOver()) {
+    setTimeout(() => startNewRound(G.roundLeaderIdx), 900);
+  }
 }
 
 function startNewRound(leaderIdx) {
@@ -907,15 +909,29 @@ function startNewRound(leaderIdx) {
   if (G.roundTransition) return;      // re-entrancy guard: prevent double-increment from spam
   G.roundTransition = true;
   
+  // Check game over before starting new round
+  if (checkGameOver()) {
+    G.roundTransition = false;
+    return;
+  }
+  
   let actualLeader = leaderIdx;
-  if (getPlayerHandCount(actualLeader) === 0) {
+  // Find next valid leader (has cards, not kicked)
+  if (getPlayerHandCount(actualLeader) === 0 || G.players[actualLeader].isKicked) {
     for (let step = 1; step < G.numPlayers; step++) {
       const idx = (actualLeader + step) % G.numPlayers;
-      if (getPlayerHandCount(idx) > 0) {
+      if (getPlayerHandCount(idx) > 0 && !G.players[idx].isKicked) {
         actualLeader = idx;
         break;
       }
     }
+  }
+
+  // If still can't find a valid leader, game is over
+  if (getPlayerHandCount(actualLeader) === 0 || G.players[actualLeader].isKicked) {
+    G.roundTransition = false;
+    checkGameOver();
+    return;
   }
 
   G.roundNum++;
@@ -1004,6 +1020,8 @@ function renderGame() {
   renderLog();
   updateStatus();
   updateButtons();
+  updatePatternPreview();
+  updateTurnIndicator();
 }
 
 /* --- Opponents --- */
@@ -1185,6 +1203,8 @@ function toggleCard(id) {
   else G.selectedIds.add(id);
   renderPlayerHand();
   updateButtons();
+  updatePatternPreview();
+  playSound('deal'); // subtle click feedback
 }
 
 /* --- Card element --- */
@@ -1216,8 +1236,9 @@ function renderCardElement(card, selectable, selected) {
 /* --- Log --- */
 function renderLog() {
   const el = $('game-log');
+  if (!el) return;
   el.innerHTML = '';
-  const recent = G.logs.slice(-8);
+  const recent = G.logs.slice(-4);
   for (const msg of recent) {
     const div = document.createElement('div');
     div.className = 'log-entry';
@@ -1295,6 +1316,71 @@ function updateButtons() {
 
   btnPlay.disabled = !(isMyTurn && hasSelect);
   btnPass.disabled = !(isMyTurn && hasCurrent);
+
+  // Show card count on play button
+  btnPlay.textContent = hasSelect ? `Mainkan (${G.selectedIds.size})` : 'Mainkan';
+
+  // Pulse play button when it's enabled
+  if (!btnPlay.disabled) {
+    btnPlay.classList.add('pulse-ready');
+  } else {
+    btnPlay.classList.remove('pulse-ready');
+  }
+}
+
+/* --- Pattern Preview (shows what pattern the selected cards form) --- */
+function updatePatternPreview() {
+  const el = $('pattern-preview');
+  if (!el) return;
+  const isMP = typeof MP !== 'undefined' && MP.isMultiplayer;
+  const myIdx = isMP ? G.myIndex : 0;
+  
+  if (G.selectedIds.size === 0 || G.gameOver) {
+    el.textContent = '';
+    el.classList.remove('visible');
+    return;
+  }
+
+  const hand = G.players[myIdx]?.hand;
+  if (!hand) return;
+  const sel = hand.filter(c => G.selectedIds.has(c.id));
+  const pattern = detectPattern(sel);
+  
+  if (pattern) {
+    const label = patternLabel(pattern, sel);
+    // Check if it can beat current pattern
+    if (G.currentPattern) {
+      if (canBeat(pattern, G.currentPattern)) {
+        el.textContent = `✅ ${label}`;
+        el.className = 'pattern-preview visible valid';
+      } else {
+        el.textContent = `❌ ${label} — tidak cukup kuat`;
+        el.className = 'pattern-preview visible invalid';
+      }
+    } else {
+      // Opening play — check if it's a bomb (not allowed as opener)
+      if (pattern.type === 'BOMB' || pattern.type === 'BLACK_JOKER_BOMB' || pattern.type === 'RED_JOKER_BOMB') {
+        el.textContent = `💣 ${label} — tidak bisa untuk membuka`;
+        el.className = 'pattern-preview visible invalid';
+      } else {
+        el.textContent = `✅ ${label}`;
+        el.className = 'pattern-preview visible valid';
+      }
+    }
+  } else {
+    el.textContent = `⚠ Kombinasi tidak valid (${sel.length} kartu)`;
+    el.className = 'pattern-preview visible invalid';
+  }
+}
+
+/* --- Turn Indicator on Player Section --- */
+function updateTurnIndicator() {
+  const section = $('player-section');
+  if (!section) return;
+  const isMP = typeof MP !== 'undefined' && MP.isMultiplayer;
+  const myIdx = isMP ? G.myIndex : 0;
+  const isMyTurn = G.currentIdx === myIdx && !G.gameOver && !G.busy;
+  section.classList.toggle('my-turn', isMyTurn);
 }
 
 /* --- Card rank label helper (safe for jokers) --- */
@@ -1794,6 +1880,19 @@ function setupListeners() {
   // Play / Pass
   $('btn-play').addEventListener('click', playerPlay);
   $('btn-pass').addEventListener('click', playerPass);
+
+  // Sort hand button
+  $('btn-sort').addEventListener('click', () => {
+    const isMP = typeof MP !== 'undefined' && MP.isMultiplayer;
+    const myIdx = isMP ? G.myIndex : 0;
+    const hand = G.players[myIdx]?.hand;
+    if (hand && hand.length > 0) {
+      sortHand(hand);
+      renderPlayerHand();
+      playSound('deal');
+      showToast('🃏 Kartu diurutkan');
+    }
+  });
 }
 
 /* --- Boot --- */

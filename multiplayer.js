@@ -61,7 +61,7 @@ const MP = {
 
 const SUPABASE_URL = 'https://uciohbcjtranikvcufhh.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_mm8NP_zIDLfk6bmlwXmIxQ_oIDf6C_U';
-const supabaseClient = typeof window.supabase !== 'undefined' 
+const supabaseClient = (typeof window.supabase !== 'undefined' && window.supabase)
   ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) 
   : null;
 
@@ -204,6 +204,9 @@ function updateMenuProfileBadge(profile) {
  *  5. ROOM CREATION (HOST)
  * ============================================================ */
 function initCreateRoomUI() {
+  if (initCreateRoomUI._done) return;
+  initCreateRoomUI._done = true;
+
   MP.settings.decks = 1;
   MP.settings.maxPlayers = 4;
 
@@ -281,6 +284,9 @@ async function createRoom() {
  *  6. JOIN ROOM (GUEST)
  * ============================================================ */
 function initJoinRoomUI() {
+  if (initJoinRoomUI._done) return;
+  initJoinRoomUI._done = true;
+
   const input = $mp('join-code-input');
   input.value = '';
   $mp('join-error').textContent = '';
@@ -365,6 +371,10 @@ function generateId() {
 
 function initChannel(roomCode, isHost = false, preserveState = false) {
   return new Promise((resolve, reject) => {
+    if (!supabaseClient) {
+      reject(new Error('Supabase client tidak tersedia. Periksa koneksi internet.'));
+      return;
+    }
     destroyChannel(preserveState);
     
     let storedId = localStorage.getItem('setsot_client_id');
@@ -965,6 +975,9 @@ function kickPlayer(peerId) {
 }
 
 function initLobbyUI() {
+  if (initLobbyUI._done) return;
+  initLobbyUI._done = true;
+
   // Copy room code
   $mp('lobby-code-btn').addEventListener('click', () => {
     navigator.clipboard.writeText(MP.roomCode).then(() => {
@@ -1105,6 +1118,9 @@ function escapeHtml(str) {
 }
 
 function initIngameChatUI() {
+  if (initIngameChatUI._done) return;
+  initIngameChatUI._done = true;
+
   const toggle = $mp('ingame-chat-toggle');
   const panel = $mp('ingame-chat-panel');
   const closeBtn = $mp('ingame-chat-close');
@@ -1227,6 +1243,10 @@ function hostStartGame(isRestart = false) {
       myIndex: i,
       numPlayers,
       numDecks,
+      isFirstGame: G.isFirstGame,
+      currentIdx: G.currentIdx,
+      roundLeaderIdx: G.roundLeaderIdx,
+      roomCode: MP.roomCode,
       players: G.players.map((p, idx) => ({
         name: p.name,
         avatar: p.avatar,
@@ -1234,10 +1254,7 @@ function hostStartGame(isRestart = false) {
         handCount: p.hand.length,
         peerId: p.peerId,
         hand: idx === i ? p.hand : null // only send their own hand
-      })),
-      currentIdx: G.currentIdx,
-      roundLeaderIdx: G.roundLeaderIdx,
-      roomCode: MP.roomCode
+      }))
     };
 
     sendToPlayer(mp.peerId, payload);
@@ -1288,7 +1305,7 @@ function startMultiplayerGame(data) {
 
   G.numPlayers = numPlayers;
   G.numDecks = numDecks;
-  G.isFirstGame = true;
+  G.isFirstGame = (data.isFirstGame !== false); // respect host's flag; default true for backward compat
   G.gameOver = false;
   G.winners = [];
   G.roundNum = 1;
@@ -1588,6 +1605,18 @@ function applyGameStateUpdate(data) {
 function sendActionToHost(action, payload) {
   if (!MP.channel) return;
   
+  // Guard: do not send if we are a kicked/spectating player
+  // (kicked player re-joining lobby should not interact with running game)
+  if (G.myIndex !== undefined && G.players[G.myIndex] && G.players[G.myIndex].isKicked) {
+    console.warn('sendActionToHost blocked: player is kicked');
+    return;
+  }
+  // Also block if gameStarted but we have no valid myIndex (pure spectator)
+  if (MP.gameStarted && (G.myIndex === undefined || G.myIndex === null)) {
+    console.warn('sendActionToHost blocked: no myIndex (spectator)');
+    return;
+  }
+  
   let actionStr = action;
   let finalPayload = payload || {};
   if (typeof action === 'object' && action !== null) {
@@ -1613,12 +1642,19 @@ function handleMultiplayerAction(data) {
   if (!MP.isHost) return;
   
   if (data.action === 'vote') {
+    // Only allow votes from connected players who are actually in the game
+    const voterGIdx = G.players.findIndex(p => p.peerId === data.playerPeerId || p.peerId === data.playerPeerId);
+    const voterMPIdx = MP.players.findIndex(p => p.peerId === data.playerPeerId);
+    if (voterGIdx !== -1 && G.players[voterGIdx].isKicked) return; // kicked player can't vote
+    if (voterMPIdx === -1) return; // unknown player
     handleVoteCast(data.playerPeerId, data.targetPeerId, data.voteType);
     return;
   }
 
   const playerIdx = G.players.findIndex(p => p.playerPeerId === data.playerPeerId || p.peerId === data.playerPeerId);
+  // Reject if: player not found, not current turn, or player is kicked/isBot already
   if (playerIdx === -1 || playerIdx !== G.currentIdx) return;
+  if (G.players[playerIdx].isKicked) return;
 
   clearTurnTimer();
 
@@ -1844,6 +1880,10 @@ document.addEventListener('DOMContentLoaded', () => {
 function showVoteOverlay(peerId, playerName, countdown) {
   if (peerId === MP.myPeerId) return; // Do not show voting popup to the player who left/disconnected
   if (!MP.gameStarted || G.gameOver) return; // Do not show voting overlay in lobby or after game is over
+  // Do not show to spectators (kicked players watching from lobby)
+  if (G.myIndex !== undefined && G.players[G.myIndex] && G.players[G.myIndex].isKicked) return;
+  // Do not show to pure spectators (no myIndex = joined lobby mid-game)
+  if (G.myIndex === undefined || G.myIndex === null) return;
   if (document.getElementById('vote-overlay-' + peerId)) return;
 
   const div = document.createElement('div');
@@ -2051,6 +2091,14 @@ function applyVoteResult(targetPeerId, actionType) {
           setTimeout(() => startNewRound(G.roundLeaderIdx), 900);
         }
       }
+    } else {
+      // Guest side: also check game over locally (for rendering)
+      const activePlayers = G.players.filter(p => !p.isKicked && p.hand && (p.handCount > 0 || p.hand.length > 0));
+      if (activePlayers.length <= 1 && G.winners && G.winners.length > 0) {
+        renderGame();
+      } else {
+        renderGame();
+      }
     }
   } else if (actionType === 'wait') {
     addLog(`Voting selesai: Menunggu <strong>${playerName}</strong> kembali.`);
@@ -2206,8 +2254,8 @@ function showTransientChatBubble(sender, message) {
   bubble.style.pointerEvents = 'none';
   document.body.appendChild(bubble);
 
-  const senderLabel = sender === 'system' ? '📢 System' : sender;
-  bubble.innerHTML = `<strong>${senderLabel}</strong>: ${message}`;
+  const senderLabel = sender === 'system' ? '📢 System' : escapeHtml(sender);
+  bubble.innerHTML = `<strong>${senderLabel}</strong>: ${escapeHtml(message)}`;
 
   // Animate in
   requestAnimationFrame(() => {
